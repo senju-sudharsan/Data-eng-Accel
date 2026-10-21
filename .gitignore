@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Testing and coverage
+.pytest_cache/
+.pytest_tmp/
+.coverage
+
+# Build artifacts
+dist/
+build/
+
+# Local generated data and databases
+data/bronze/
+data/metadata/
+*.sqlite
+*.sqlite3
+*.sqlitedb
+
+# Airflow logs
+airflow/logs/

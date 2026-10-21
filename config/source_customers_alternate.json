@@ -1,0 +1,9 @@
+{
+  "source_name": "assessment_customers_alternate",
+  "format": "csv",
+  "input_path": "../data/fixtures/customers_alternate.csv",
+  "bronze_path": "../data/bronze/customers_alternate_raw.jsonl",
+  "metadata_store": "../data/metadata/ingestion.db",
+  "delimiter": ",",
+  "encoding": "utf-8"
+}
