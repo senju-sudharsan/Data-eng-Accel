@@ -1,0 +1,82 @@
+{
+  "source_name": "assessment_customers",
+  "format": "csv",
+  "input_path": "../data/fixtures/customers.csv",
+  "bronze_path": "../data/bronze/customers_raw.jsonl",
+  "metadata_store": "../data/metadata/ingestion.db",
+  "delimiter": ",",
+  "encoding": "utf-8",
+  "silver": {
+    "target_name": "dim_customers",
+    "silver_path": "../data/silver/dim_customers.jsonl",
+    "rejected_path": "../data/silver/quarantine_customers.jsonl",
+    "primary_keys": ["customer_id"],
+    "extra_columns": "ignore",
+    "missing_columns": "null",
+    "columns": [
+      {
+        "name": "customer_id",
+        "data_type": "string",
+        "nullable": false,
+        "description": "Unique business customer key"
+      },
+      {
+        "name": "customer_name",
+        "data_type": "string",
+        "nullable": false,
+        "description": "Standardized customer name"
+      },
+      {
+        "name": "postal_code",
+        "data_type": "string",
+        "nullable": true,
+        "description": "Zero-padded 5-digit postal code"
+      }
+    ],
+    "mappings": [
+      {
+        "source_column": "customer_id",
+        "target_column": "customer_id",
+        "transform": "trim"
+      },
+      {
+        "source_column": "customer_name",
+        "target_column": "customer_name",
+        "transform": "trim"
+      },
+      {
+        "source_column": "postal_code",
+        "target_column": "postal_code",
+        "transform": "trim"
+      }
+    ],
+    "quality_rules": [
+      {
+        "rule_name": "not_null",
+        "columns": ["customer_id"],
+        "severity": "reject"
+      },
+      {
+        "rule_name": "unique",
+        "columns": ["customer_id"],
+        "severity": "reject"
+      },
+      {
+        "rule_name": "regex",
+        "columns": ["postal_code"],
+        "severity": "warn",
+        "params": {
+          "pattern": "^\\d{5}$"
+        }
+      }
+    ],
+    "scd2": {
+      "enabled": true,
+      "business_keys": ["customer_id"],
+      "tracking_columns": ["customer_name", "postal_code"],
+      "effective_from_col": "_effective_from",
+      "effective_to_col": "_effective_to",
+      "is_current_col": "_is_current"
+    }
+  }
+}
