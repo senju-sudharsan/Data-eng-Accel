@@ -27,3 +27,6 @@ data/metadata/
 
 # Airflow logs
 airflow/logs/
+
+# Local Olist source datasets
+data/fixtures/archive/data/fixtures/archive/
