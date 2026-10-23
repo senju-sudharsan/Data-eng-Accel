@@ -1,0 +1,10 @@
+
+{
+  "source_name": "product_category_translation",
+  "format": "csv",
+  "input_path": "../data/fixtures/archive/product_category_name_translation.csv",
+  "bronze_path": "../data/bronze/product_category_translation_raw.jsonl",
+  "metadata_store": "../data/metadata/ingestion.db",
+  "delimiter": ",",
+  "encoding": "utf-8"
+}

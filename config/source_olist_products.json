@@ -1,0 +1,10 @@
+
+{
+  "source_name": "olist_products",
+  "format": "csv",
+  "input_path": "../data/fixtures/archive/olist_products_dataset.csv",
+  "bronze_path": "../data/bronze/olist_products_raw.jsonl",
+  "metadata_store": "../data/metadata/ingestion.db",
+  "delimiter": ",",
+  "encoding": "utf-8"
+}

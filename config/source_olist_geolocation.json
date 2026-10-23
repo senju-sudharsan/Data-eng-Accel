@@ -1,0 +1,10 @@
+
+{
+  "source_name": "olist_geolocation",
+  "format": "csv",
+  "input_path": "../data/fixtures/archive/olist_geolocation_dataset.csv",
+  "bronze_path": "../data/bronze/olist_geolocation_raw.jsonl",
+  "metadata_store": "../data/metadata/ingestion.db",
+  "delimiter": ",",
+  "encoding": "utf-8"
+}

@@ -1,0 +1,10 @@
+
+{
+  "source_name": "olist_order_payments",
+  "format": "csv",
+  "input_path": "../data/fixtures/archive/olist_order_payments_dataset.csv",
+  "bronze_path": "../data/bronze/olist_order_payments_raw.jsonl",
+  "metadata_store": "../data/metadata/ingestion.db",
+  "delimiter": ",",
+  "encoding": "utf-8"
+}
