@@ -7,6 +7,7 @@ from accelerator.bronze_ingestion import (
     ingest,
     load_config,
     read_source,
+    SourceReader,
 )
 from accelerator.contracts import (
     LINEAGE_BATCH_ID,
@@ -25,6 +26,7 @@ from accelerator.contracts import (
     SCD_IS_CURRENT,
     SCD_SURROGATE_KEY,
     BatchStatus,
+    BatchSourceConfigProtocol,
     BatchTrackerProtocol,
     BronzeStoreProtocol,
     ColumnMapping,
@@ -56,6 +58,7 @@ __all__ = [
     "SourceConfig",
     "load_config",
     "read_source",
+    "SourceReader",
     "BatchTracker",
     "LocalBronzeStore",
     "ingest",
@@ -83,6 +86,7 @@ __all__ = [
     "SilverTransformerProtocol",
     "QualityValidatorProtocol",
     "Scd2ProcessorProtocol",
+    "BatchSourceConfigProtocol",
     "BatchTrackerProtocol",
     # Silver Transformation
     "SilverTransformer",

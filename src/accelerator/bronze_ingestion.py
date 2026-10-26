@@ -19,6 +19,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from accelerator.contracts import BatchSourceConfigProtocol
+
 
 REQUIRED_CONFIG_FIELDS = {"source_name", "format", "input_path", "bronze_path", "metadata_store"}
 SUPPORTED_FORMATS = {"csv", "json"}
@@ -123,6 +125,29 @@ def read_source(config: SourceConfig) -> Iterable[dict[str, Any]]:
     yield from parsed
 
 
+
+class SourceReader:
+    """Reader component conforming to SourceReaderProtocol."""
+
+    def read(self, config: Any) -> Iterable[dict[str, Any]]:
+        """Read source records preserving raw representation.
+
+        Accepts either a SourceConfig or PipelineConfig instance.
+        """
+        if not isinstance(config, SourceConfig):
+            cfg = SourceConfig(
+                source_name=config.source_name,
+                format=config.format,
+                input_path=Path(config.input_path),
+                bronze_path=Path(config.bronze_path),
+                metadata_store=Path(config.metadata_store),
+                delimiter=getattr(config, 'delimiter', ','),
+                encoding=getattr(config, 'encoding', 'utf-8'),
+            )
+        else:
+            cfg = config
+        return read_source(cfg)
+
 class BatchTracker:
     """Local equivalent of the original project's metadata.batch_control pattern."""
 
@@ -164,7 +189,7 @@ class BatchTracker:
             )
 
     def start(
-        self, config: SourceConfig, ingested_at: str, submission_key: str | None = None,
+        self, config: BatchSourceConfigProtocol, ingested_at: str, submission_key: str | None = None,
         submission_fingerprint: str | None = None, lease_token: str | None = None,
     ) -> str:
         batch_id = str(uuid.uuid4())

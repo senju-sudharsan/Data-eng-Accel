@@ -345,14 +345,38 @@ class Scd2ProcessorProtocol(Protocol):
 
 
 @runtime_checkable
+class BatchSourceConfigProtocol(Protocol):
+    """Structural protocol representing minimal configuration attributes for batch tracking."""
+    source_name: str
+    format: str
+    input_path: Path
+    bronze_path: Path
+
+
+@runtime_checkable
 class BatchTrackerProtocol(Protocol):
     """Protocol for batch control and execution auditing."""
 
-    def start(self, source_name: str, input_path: str, format_: str, ingested_at: str) -> str:
+    def start(
+        self,
+        config: BatchSourceConfigProtocol,
+        ingested_at: str,
+        submission_key: str | None = None,
+        submission_fingerprint: str | None = None,
+        lease_token: str | None = None,
+    ) -> str:
         """Start a batch record and return unique batch_id."""
         ...
 
-    def finish(self, batch_id: str, status: BatchStatus, records_processed: int, finished_at: str) -> None:
+    def finish(
+        self,
+        batch_id: str,
+        status: BatchStatus | str,
+        records_processed: int,
+        finished_at: str,
+        records_persisted: int | None = None,
+        error_message: str | None = None,
+    ) -> None:
         """Finalize batch status and record processing metrics."""
         ...
 

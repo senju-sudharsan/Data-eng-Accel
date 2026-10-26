@@ -480,3 +480,36 @@ def test_real_csv_fixtures_end_to_end_transformation() -> None:
     assert transformed_2[0]["customer_id"] == "C003"
     assert transformed_2[0]["customer_name"] == "Chandra"
     assert transformed_2[0]["postal_code"] == "07890"
+
+def test_bronze_to_silver_integration_handoff(tmp_path: Path) -> None:
+    """Test complete handoff from BronzeReader output to SilverTransformer."""
+    from accelerator.bronze_ingestion import BronzeReader
+
+    bronze_file = PROJECT_ROOT / "data" / "bronze" / "customers_raw.jsonl"
+    if not bronze_file.exists():
+        pytest.skip("Bronze customers_raw.jsonl not found")
+
+    reader = BronzeReader()
+    bronze_records = list(reader.read(bronze_file))
+    assert len(bronze_records) > 0
+
+    pipeline_cfg = load_pipeline_config("config/dataset_customers_pipeline.json")
+    assert pipeline_cfg.silver is not None
+
+    transformer = SilverTransformer()
+    silver_records = transformer.transform(
+        records=bronze_records,
+        silver_config=pipeline_cfg.silver,
+        batch_id="test-bronze-silver-handoff",
+    )
+
+    assert len(silver_records) == len(bronze_records)
+    for rec in silver_records:
+        assert "customer_id" in rec
+        assert "customer_name" in rec
+        assert "postal_code" in rec
+        assert rec[LINEAGE_SILVER_BATCH_ID] == "test-bronze-silver-handoff"
+        assert rec[LINEAGE_RECORD_HASH]
+        # Ensure leading zeros on postal_code were not coerced or truncated
+        if rec["customer_id"] == "C001":
+            assert rec["postal_code"] == "00123"

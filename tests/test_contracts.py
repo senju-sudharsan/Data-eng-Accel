@@ -182,3 +182,67 @@ def test_lineage_constants_values() -> None:
     assert SCD_EFFECTIVE_FROM == "_effective_from"
     assert SCD_EFFECTIVE_TO == "_effective_to"
     assert SCD_IS_CURRENT == "_is_current"
+
+def test_concrete_protocol_conformance_and_signatures(tmp_path: Path) -> None:
+    """Verify concrete SourceReader and BatchTracker adhere to Protocols and signatures."""
+    from accelerator.bronze_ingestion import BatchTracker, SourceReader
+
+    reader = SourceReader()
+    assert isinstance(reader, SourceReaderProtocol)
+
+    doc_test_db = tmp_path / "contract_check.db"
+    tracker = BatchTracker(doc_test_db)
+    assert isinstance(tracker, BatchTrackerProtocol)
+
+    cfg = load_pipeline_config("config/source_customers.json")
+    records = list(reader.read(cfg))
+    assert len(records) == 2
+    assert records[0]["customer_id"] == "C001"
+
+    # Verify signature compatibility through BatchTrackerProtocol type annotation
+    tracker_proto: BatchTrackerProtocol = tracker
+    batch_id = tracker_proto.start(
+        config=cfg,
+        ingested_at="2026-10-26T12:00:00Z",
+        submission_key="sub_test_001",
+    )
+    assert batch_id
+    tracker_proto.finish(
+        batch_id=batch_id,
+        status=BatchStatus.SUCCESS,
+        records_processed=2,
+        finished_at="2026-10-26T12:01:00Z",
+        records_persisted=2,
+    )
+
+def test_batch_tracker_protocol_status_and_config_types(tmp_path: Path) -> None:
+    """Verify BatchTrackerProtocol start and finish work with SourceConfig, PipelineConfig, BatchStatus and str."""
+    from accelerator.bronze_ingestion import BatchTracker, load_config
+
+    db_path = tmp_path / "strong_types_check.db"
+    tracker = BatchTracker(db_path)
+    tracker_proto: BatchTrackerProtocol = tracker
+
+    # Test 1: Start with SourceConfig, Finish with raw str status
+    src_cfg = load_config("config/source_customers.json")
+    batch_1 = tracker_proto.start(src_cfg, '2026-10-26T10:00:00Z')
+    assert batch_1
+    tracker_proto.finish(batch_1, "SUCCESS", 2, '2026-10-26T10:01:00Z', 2)
+
+    # Test 2: Start with PipelineConfig, Finish with BatchStatus enum
+    pipe_cfg = load_pipeline_config("config/dataset_customers_pipeline.json")
+    batch_2 = tracker_proto.start(pipe_cfg, '2026-10-26T11:00:00Z', submission_key='sub_002')
+    assert batch_2
+    tracker_proto.finish(batch_2, BatchStatus.SUCCESS, 2, '2026-10-26T11:01:00Z', 2)
+
+def test_batch_tracker_protocol_type_hints_resolution() -> None:
+    """Regression test: verify get_type_hints resolves cleanly without NameError."""
+    import typing
+    from accelerator.contracts import BatchTrackerProtocol, BatchSourceConfigProtocol
+
+    hints_start = typing.get_type_hints(BatchTrackerProtocol.start)
+    assert "config" in hints_start
+    assert hints_start["config"] is BatchSourceConfigProtocol
+
+    hints_finish = typing.get_type_hints(BatchTrackerProtocol.finish)
+    assert "status" in hints_finish
