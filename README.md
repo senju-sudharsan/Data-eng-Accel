@@ -41,9 +41,11 @@ C:\Data-eng-Accel\
 │       ├── __init__.py                     # Package exports
 │       ├── contracts.py                    # Schema models, enums, protocols, config loader
 │       └── bronze_ingestion.py             # CSV/JSON readers, LocalBronzeStore, BatchTracker
+│       └── silver_transformations.py       # Canonical schema mapping, type casting, lineage, hashing (Phase 3)
 └── tests/
     ├── test_bronze_ingestion.py            # Baseline Bronze ingestion tests
     └── test_contracts.py                   # Schema and component contract tests
+    └── test_silver_transformations.py      # Silver transformation unit & contract tests (Phase 3)
 ```
 
 ---
@@ -60,7 +62,12 @@ python -m venv .venv
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -v
 ```
-All baseline Bronze ingestion tests and Phase 0 contract validation tests run and pass.
+All baseline Bronze ingestion tests, Phase 0 contract validation tests, and Phase 3 Silver transformation tests run and pass.
+
+To run the Silver transformation tests independently:
+``powershell
+.\.venv\Scripts\python.exe -m pytest -q tests/test_silver_transformations.py
+``
 
 ### 3. Run Bronze Ingestion Demonstration
 Run the primary customer fixture:

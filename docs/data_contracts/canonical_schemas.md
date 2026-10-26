@@ -33,8 +33,8 @@ Silver represents cleaned, standardized, and conformed entity data:
 - **Typed Values:** Coerced to strong canonical types (`string`, `integer`, `float`, `decimal`, `boolean`, `date`, `timestamp`).
 - **Standard Silver Lineage:**
   - `_silver_batch_id` (`string` / UUID): Identifies the Silver processing execution.
-  - `_silver_processed_at` (`string` / ISO-8601 UTC): Timestamp of Silver standardization.
-  - `_record_hash` (`string` / SHA-256): Deterministic hash of conformed business and attribute values, used for efficient change detection and deduplication.
+  - `_silver_processed_at` (`string` / ISO-8601 UTC): Timestamp of Silver standardization (deterministic per batch).
+  - `_record_hash` (`string` / SHA-256): Deterministic hash of conformed canonical business fields (keys sorted alphabetically, JSON serialized with strict separators, excluding technical `_` lineage fields). Used for change detection and SCD2 version evaluation.
 
 ### 2.3 Slowly Changing Dimension (SCD Type 2) Contract
 For dimensions tracking historical changes over time:

@@ -27,7 +27,7 @@ flowchart TD
 | **Configuration Engine** | `load_pipeline_config()` | Framework Architect (T1) | **Implemented & Tested** |
 | **Source Reader** | `SourceReaderProtocol` | Ingestion Architect (T2) | Implemented for CSV & JSON |
 | **Bronze Store** | `BronzeStoreProtocol` | Ingestion Architect (T2) | Implemented (`LocalBronzeStore`) |
-| **Silver Transformer** | `SilverTransformerProtocol` | Silver Architect (T3) | Contract Defined; Phase 1 target |
+| **Silver Transformer** | `SilverTransformerProtocol` (`SilverTransformer`) | Silver Architect (T3) | **Implemented & Tested (Phase 3)** |
 | **Quality Validator** | `QualityValidatorProtocol` | Silver Architect (T3) | Contract Defined; Phase 1 target |
 | **SCD2 Processor** | `Scd2ProcessorProtocol` | Silver Architect (T3) | Contract Defined; Phase 1 target |
 | **Batch Tracker** | `BatchTrackerProtocol` | Ingestion Architect (T2) | Implemented for SQLite |
@@ -65,12 +65,22 @@ flowchart TD
   - `FabricDeltaBronzeStore` (Planned Phase 2): Appends records to Microsoft Fabric Lakehouse OneLake Delta table.
 
 ### 3.4 Silver Transformer
-- **Protocol:** `SilverTransformerProtocol`
+- **Module:** `accelerator.silver_transformations`
+- **Class:** `SilverTransformer` (implements `SilverTransformerProtocol`)
 - **Method:** `transform(records: Iterable[dict[str, Any]], silver_config: SilverConfig, batch_id: str) -> list[dict[str, Any]]`
 - **Inputs:** Raw Bronze records, `SilverConfig` (mappings, type definitions, extra/missing column policies), and current `batch_id`.
 - **Outputs:** Conformed records formatted to canonical names, types, and enriched with `_silver_batch_id`, `_silver_processed_at`, and `_record_hash`.
+- **Mapping & Type Casting:**
+  - Evaluates `ColumnMapping` source-to-target names with string transforms (`trim`, `upper`, `lower`).
+  - Converts canonical fields to `FieldType` (`string`, `integer`, `float`, `decimal`, `boolean`, `date`, `timestamp`).
+  - Rejects truncation of non-integral floats to integer or booleans to numbers.
+  - Preserves leading zeros on identifier strings (e.g., postal codes).
+- **Missing & Extra Column Policies:**
+  - Missing columns: `MissingColumnsPolicy.NULL` populates `None` (or configured default_value); `MissingColumnsPolicy.FAIL` raises error.
+  - Extra columns: `ExtraColumnsPolicy.IGNORE` drops unmapped fields; `ExtraColumnsPolicy.FAIL` raises error; `ExtraColumnsPolicy.PRESERVE` retains unmapped fields under `_unmapped_attributes`.
+- **Deterministic Hashing:** Calculates SHA-256 `_record_hash` over canonical business fields (excluding batch IDs and timestamps) with sorted keys.
 - **Exceptions:**
-  - `ValueError`: If missing column policy is `fail` and a required column is not present.
+  - `ValueError`: If required columns are missing under `fail` policy, unexpected columns appear under `fail` policy, unsupported transforms/types are specified, or values cannot be cast to declared types without silent corruption.
 
 ### 3.5 Quality Validator & Rejection Handler
 - **Protocol:** `QualityValidatorProtocol`

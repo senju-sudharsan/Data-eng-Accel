@@ -46,6 +46,10 @@ from accelerator.contracts import (
     ValidationSeverity,
     load_pipeline_config,
 )
+from accelerator.silver_transformations import (
+    SilverTransformer,
+    compute_record_hash,
+)
 
 __all__ = [
     # Bronze Ingestion
@@ -80,6 +84,9 @@ __all__ = [
     "QualityValidatorProtocol",
     "Scd2ProcessorProtocol",
     "BatchTrackerProtocol",
+    # Silver Transformation
+    "SilverTransformer",
+    "compute_record_hash",
     # Lineage Constants
     "LINEAGE_SOURCE_NAME",
     "LINEAGE_BATCH_ID",
