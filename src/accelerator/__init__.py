@@ -48,6 +48,9 @@ from accelerator.contracts import (
     ValidationSeverity,
     load_pipeline_config,
 )
+from accelerator.quality_validator import (
+    QualityValidator,
+)
 from accelerator.silver_transformations import (
     SilverTransformer,
     compute_record_hash,
@@ -88,6 +91,8 @@ __all__ = [
     "Scd2ProcessorProtocol",
     "BatchSourceConfigProtocol",
     "BatchTrackerProtocol",
+    # Quality Validation
+    "QualityValidator",
     # Silver Transformation
     "SilverTransformer",
     "compute_record_hash",
