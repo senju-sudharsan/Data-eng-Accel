@@ -55,6 +55,7 @@ from accelerator.silver_transformations import (
     SilverTransformer,
     compute_record_hash,
 )
+from accelerator.scd2_processor import Scd2Processor
 
 __all__ = [
     # Bronze Ingestion
@@ -96,6 +97,8 @@ __all__ = [
     # Silver Transformation
     "SilverTransformer",
     "compute_record_hash",
+    # SCD2
+    "Scd2Processor",
     # Lineage Constants
     "LINEAGE_SOURCE_NAME",
     "LINEAGE_BATCH_ID",

@@ -491,6 +491,11 @@ def load_pipeline_config(config_path: str | Path) -> PipelineConfig:
                 for bk in scd2.business_keys:
                     if bk not in defined_col_names:
                         raise ValueError(f"SCD2 business_key '{bk}' is not defined in silver columns: {defined_col_names}")
+                for tracking_column in scd2.tracking_columns:
+                    if tracking_column not in defined_col_names:
+                        raise ValueError(
+                            f"SCD2 tracking_column '{tracking_column}' is not defined in silver columns: {defined_col_names}"
+                        )
 
         silver_config = SilverConfig(
             target_name=target_name,
