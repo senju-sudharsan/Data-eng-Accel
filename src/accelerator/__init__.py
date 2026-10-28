@@ -26,6 +26,8 @@ from accelerator.contracts import (
     SCD_IS_CURRENT,
     SCD_SURROGATE_KEY,
     BatchStatus,
+    BatchAuditSummary,
+    ReconciliationStatus,
     BatchSourceConfigProtocol,
     BatchTrackerProtocol,
     BronzeStoreProtocol,
@@ -48,16 +50,23 @@ from accelerator.contracts import (
     ValidationSeverity,
     load_pipeline_config,
 )
+from accelerator.pipeline_runner import (
+    run_pipeline,
+)
 from accelerator.quality_validator import (
     QualityValidator,
+)
+from accelerator.scd2_processor import (
+    Scd2Processor,
 )
 from accelerator.silver_transformations import (
     SilverTransformer,
     compute_record_hash,
 )
-from accelerator.scd2_processor import Scd2Processor
 
 __all__ = [
+    # Pipeline Runner
+    "run_pipeline",
     # Bronze Ingestion
     "SourceConfig",
     "load_config",
@@ -76,14 +85,16 @@ __all__ = [
     "load_pipeline_config",
     # Enums
     "BatchStatus",
+    "ReconciliationStatus",
     "FieldType",
     "ExtraColumnsPolicy",
     "MissingColumnsPolicy",
     "ValidationSeverity",
-    # Results
+    # Results & Summaries
     "IngestionResult",
     "TransformationResult",
     "QualityCheckResult",
+    "BatchAuditSummary",
     # Protocols
     "SourceReaderProtocol",
     "BronzeStoreProtocol",
@@ -97,7 +108,7 @@ __all__ = [
     # Silver Transformation
     "SilverTransformer",
     "compute_record_hash",
-    # SCD2
+    # SCD2 Processor
     "Scd2Processor",
     # Lineage Constants
     "LINEAGE_SOURCE_NAME",

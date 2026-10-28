@@ -59,6 +59,16 @@ class BatchStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class ReconciliationStatus(str, Enum):
+    """Reconciliation state of record counts across pipeline stages."""
+    RECONCILED = "RECONCILED"
+    DISCREPANCY = "DISCREPANCY"
+    FAILED = "FAILED"
+    INCOMPLETE = "INCOMPLETE"
+    NONE = "NONE"
+
+
+
 class FieldType(str, Enum):
     """Canonical data types supported by the accelerator schema engine."""
     STRING = "string"
@@ -280,6 +290,32 @@ class TransformationResult:
     quality_checks: list[QualityCheckResult] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class BatchAuditSummary:
+    """Queryable audit summary for a single batch execution."""
+    batch_id: str
+    source_name: str
+    status: BatchStatus
+    stage: str
+    batch_start_time: str
+    batch_end_time: str | None
+    duration_seconds: float | None
+    records_read: int
+    records_bronze: int
+    # Valid/conformed rows accepted after quality validation. This participates
+    # in read/silver/rejected reconciliation even for SCD2 dimensions.
+    records_silver: int
+    # Physical SCD2 versions inserted for this batch; None for non-SCD2 runs.
+    records_scd2_changed: int | None
+    records_rejected: int
+    records_failed: int | None
+    reconciliation_status: str
+    reconciliation_discrepancy: str
+    error_message: str | None
+    submission_key: str | None
+    idempotent_replay: bool = False
+
+
 # =============================================================================
 # Component Protocols (Component Interfaces)
 # =============================================================================
@@ -364,8 +400,24 @@ class BatchTrackerProtocol(Protocol):
         submission_key: str | None = None,
         submission_fingerprint: str | None = None,
         lease_token: str | None = None,
+        *,
+        silver_path: str | Path | None = None,
+        rejected_path: str | Path | None = None,
+        stage: str = "BRONZE",
     ) -> str:
         """Start a batch record and return unique batch_id."""
+        ...
+
+    def prepare_outputs(
+        self,
+        batch_id: str,
+        records_silver: int,
+        records_rejected: int,
+        stage: str = "PUBLICATION",
+        commit_state: str = "OUTPUTS_STAGED",
+        records_scd2_changed: int | None = None,
+    ) -> None:
+        """Record planned output counts prior to atomic publication."""
         ...
 
     def finish(
@@ -376,8 +428,23 @@ class BatchTrackerProtocol(Protocol):
         finished_at: str,
         records_persisted: int | None = None,
         error_message: str | None = None,
+        *,
+        records_silver: int = 0,
+        records_scd2_changed: int | None = None,
+        records_rejected: int = 0,
+        records_failed: int | None = 0,
+        stage: str = "COMPLETED",
+        reconciliation_status: str | None = None,
     ) -> None:
         """Finalize batch status and record processing metrics."""
+        ...
+
+    def get_audit_summary(
+        self,
+        batch_id: str | None = None,
+        submission_key: str | None = None,
+    ) -> list[BatchAuditSummary]:
+        """Query audit records matching batch_id or submission_key."""
         ...
 
 

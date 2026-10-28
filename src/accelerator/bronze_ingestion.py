@@ -19,7 +19,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from accelerator.contracts import BatchSourceConfigProtocol
+from accelerator.contracts import (
+    BatchAuditSummary,
+    BatchSourceConfigProtocol,
+    BatchStatus,
+    ReconciliationStatus,
+)
 
 
 REQUIRED_CONFIG_FIELDS = {"source_name", "format", "input_path", "bronze_path", "metadata_store"}
@@ -180,6 +185,16 @@ class BatchTracker:
                 "commit_state": "TEXT NOT NULL DEFAULT 'NONE'",
                 "lease_token": "TEXT",
                 "lease_expires_at": "TEXT",
+                "records_silver": "INTEGER NOT NULL DEFAULT 0",
+                "records_scd2_changed": "INTEGER",
+                "records_rejected": "INTEGER NOT NULL DEFAULT 0",
+                "records_failed": "INTEGER",
+                "duration_seconds": "REAL",
+                "stage": "TEXT NOT NULL DEFAULT 'BRONZE'",
+                "reconciliation_status": "TEXT NOT NULL DEFAULT 'NONE'",
+                "reconciliation_discrepancy": "TEXT",
+                "silver_path": "TEXT",
+                "rejected_path": "TEXT",
             }.items():
                 if name not in existing:
                     connection.execute(f"ALTER TABLE batch_control ADD COLUMN {name} {definition}")
@@ -191,18 +206,25 @@ class BatchTracker:
     def start(
         self, config: BatchSourceConfigProtocol, ingested_at: str, submission_key: str | None = None,
         submission_fingerprint: str | None = None, lease_token: str | None = None,
+        *,
+        silver_path: str | Path | None = None,
+        rejected_path: str | Path | None = None,
+        stage: str = "BRONZE",
     ) -> str:
         batch_id = str(uuid.uuid4())
         with sqlite3.connect(self.database_path) as connection:
             try:
                 connection.execute(
                     """INSERT INTO batch_control
-                (batch_id, source_name, input_path, format, status, batch_start_time,
+                (batch_id, source_name, input_path, format, status, stage, batch_start_time,
                  records_processed, records_persisted, submission_key,
-                 submission_fingerprint, bronze_path, lease_token, lease_expires_at)
-                VALUES (?, ?, ?, ?, 'RUNNING', ?, 0, 0, ?, ?, ?, ?, ?)""",
-                    (batch_id, config.source_name, str(config.input_path), config.format, ingested_at,
-                     submission_key, submission_fingerprint, str(config.bronze_path), lease_token,
+                 submission_fingerprint, bronze_path, silver_path, rejected_path, lease_token, lease_expires_at)
+                VALUES (?, ?, ?, ?, 'RUNNING', ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)""",
+                    (batch_id, config.source_name, str(config.input_path), config.format, stage, ingested_at,
+                     submission_key, submission_fingerprint, str(config.bronze_path),
+                     str(silver_path) if silver_path else None,
+                     str(rejected_path) if rejected_path else None,
+                     lease_token,
                      (datetime.now(timezone.utc) + LEASE_DURATION).isoformat()),
                 )
             except sqlite3.IntegrityError as error:
@@ -234,6 +256,46 @@ class BatchTracker:
         with sqlite3.connect(self.database_path) as connection:
             connection.execute("UPDATE batch_control SET commit_state = 'COMMITTED' WHERE batch_id = ?", (batch_id,))
 
+    def set_commit_state(self, batch_id: str, commit_state: str) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("UPDATE batch_control SET commit_state = ? WHERE batch_id = ?", (commit_state, batch_id))
+
+    def update_stage(self, batch_id: str, stage: str, commit_state: str | None = None) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            if commit_state:
+                connection.execute(
+                    "UPDATE batch_control SET stage = ?, commit_state = ? WHERE batch_id = ?",
+                    (stage, commit_state, batch_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE batch_control SET stage = ? WHERE batch_id = ?",
+                    (stage, batch_id),
+                )
+
+    def prepare_outputs(
+        self,
+        batch_id: str,
+        records_silver: int,
+        records_rejected: int,
+        stage: str = "PUBLICATION",
+        commit_state: str = "OUTPUTS_STAGED",
+        records_scd2_changed: int | None = None,
+    ) -> None:
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE batch_control SET records_silver = ?, records_scd2_changed = ?, records_rejected = ?, stage = ?, commit_state = ? WHERE batch_id = ?",
+                (records_silver, records_scd2_changed, records_rejected, stage, commit_state, batch_id),
+            )
+
+    def set_scd2_changed(self, batch_id: str, records_scd2_changed: int) -> None:
+        """Record the physical number of SCD2 versions written for a batch."""
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute(
+                "UPDATE batch_control SET records_scd2_changed = ? WHERE batch_id = ?",
+                (records_scd2_changed, batch_id),
+            )
+
     def lease_is_active(self, row: sqlite3.Row) -> bool:
         if not row["lease_expires_at"]:
             return False
@@ -242,27 +304,221 @@ class BatchTracker:
         except ValueError:
             return False
 
-    def restart(self, batch_id: str, lease_token: str) -> None:
+    def restart(
+        self,
+        batch_id: str,
+        lease_token: str,
+        *,
+        silver_path: str | Path | None = None,
+        rejected_path: str | Path | None = None,
+        stage: str = "BRONZE",
+        expected_lease_token: str | None = None,
+    ) -> bool:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        lease_expiry = (datetime.now(timezone.utc) + LEASE_DURATION).isoformat()
         with sqlite3.connect(self.database_path) as connection:
-            connection.execute("""UPDATE batch_control SET status = 'RUNNING', batch_start_time = ?, batch_end_time = NULL,
-                error_message = NULL, records_processed = 0, records_persisted = 0, staged_path = NULL,
-                commit_state = 'NONE', lease_token = ?, lease_expires_at = ? WHERE batch_id = ?""",
-                (datetime.now(timezone.utc).isoformat(), lease_token,
-                 (datetime.now(timezone.utc) + LEASE_DURATION).isoformat(), batch_id))
+            cursor = connection.execute(
+                """UPDATE batch_control SET
+                    status = 'RUNNING',
+                    stage = ?,
+                    batch_start_time = ?,
+                    batch_end_time = NULL,
+                    duration_seconds = NULL,
+                    error_message = NULL,
+                    records_processed = 0,
+                    records_persisted = 0,
+                    records_silver = 0,
+                    records_scd2_changed = NULL,
+                    records_rejected = 0,
+                    records_failed = 0,
+                    reconciliation_status = 'NONE',
+                    reconciliation_discrepancy = NULL,
+                    staged_path = NULL,
+                    silver_path = COALESCE(?, silver_path),
+                    rejected_path = COALESCE(?, rejected_path),
+                    commit_state = 'NONE',
+                    lease_token = ?,
+                    lease_expires_at = ?
+                WHERE batch_id = ?
+                  AND (status != 'RUNNING' OR lease_expires_at IS NULL OR lease_expires_at < ? OR (? IS NOT NULL AND lease_token = ?))""",
+                (
+                    stage,
+                    now_iso,
+                    str(silver_path) if silver_path else None,
+                    str(rejected_path) if rejected_path else None,
+                    lease_token,
+                    lease_expiry,
+                    batch_id,
+                    now_iso,
+                    expected_lease_token,
+                    expected_lease_token,
+                ),
+            )
+            return cursor.rowcount > 0
 
     def finish(
-        self, batch_id: str, status: str, records_processed: int, finished_at: str,
-        records_persisted: int | None = None, error_message: str | None = None,
+        self,
+        batch_id: str,
+        status: BatchStatus | str,
+        records_processed: int,
+        finished_at: str,
+        records_persisted: int | None = None,
+        error_message: str | None = None,
+        *,
+        records_silver: int = 0,
+        records_scd2_changed: int | None = None,
+        records_rejected: int = 0,
+        records_failed: int | None = 0,
+        stage: str = "COMPLETED",
+        reconciliation_status: str | None = None,
+        silver_path: str | Path | None = None,
+        rejected_path: str | Path | None = None,
     ) -> None:
+        status_val = status.value if hasattr(status, "value") else str(status)
+        persisted = records_processed if records_persisted is None else records_persisted
+        cleaned_error = str(error_message).replace("\n", " ")[:1000] if error_message is not None else None
+
+        duration_seconds: float | None = None
+        db_silver_path = None
+        with sqlite3.connect(self.database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute("SELECT batch_start_time, silver_path FROM batch_control WHERE batch_id = ?", (batch_id,)).fetchone()
+            if row:
+                db_silver_path = row["silver_path"]
+                if row["batch_start_time"]:
+                    try:
+                        start_dt = datetime.fromisoformat(row["batch_start_time"])
+                        end_dt = datetime.fromisoformat(finished_at)
+                        duration_seconds = max(0.0, (end_dt - start_dt).total_seconds())
+                    except (ValueError, TypeError):
+                        duration_seconds = None
+
+        is_silver_pipeline = bool(silver_path or db_silver_path or (stage not in ("BRONZE", "COMPLETED") and (records_silver > 0 or records_rejected > 0)))
+
+        if reconciliation_status is not None:
+            recon_status = reconciliation_status.value if hasattr(reconciliation_status, "value") else str(reconciliation_status)
+            recon_discrepancy = cleaned_error or ""
+        elif status_val == BatchStatus.FAILED.value or status_val == "FAILED":
+            recon_status = ReconciliationStatus.FAILED.value
+            recon_discrepancy = cleaned_error or "Batch failed during execution"
+        elif status_val in (BatchStatus.SUCCESS.value, BatchStatus.PARTIAL_SUCCESS.value, "SUCCESS", "PARTIAL_SUCCESS"):
+            if not is_silver_pipeline and (stage == "BRONZE" or (records_silver == 0 and records_rejected == 0 and (records_failed or 0) == 0)):
+                if records_processed == persisted:
+                    recon_status = ReconciliationStatus.RECONCILED.value
+                    recon_discrepancy = ""
+                else:
+                    recon_status = ReconciliationStatus.DISCREPANCY.value
+                    recon_discrepancy = f"read={records_processed} != persisted={persisted}"
+            else:
+                total_accounted = records_silver + records_rejected + (records_failed or 0)
+                if records_processed == total_accounted:
+                    recon_status = ReconciliationStatus.RECONCILED.value
+                    recon_discrepancy = ""
+                else:
+                    recon_status = ReconciliationStatus.DISCREPANCY.value
+                    recon_discrepancy = f"read={records_processed} != silver={records_silver} + rejected={records_rejected} + failed={records_failed or 0}"
+        else:
+            recon_status = ReconciliationStatus.INCOMPLETE.value
+            recon_discrepancy = "Batch incomplete"
+
         with sqlite3.connect(self.database_path) as connection:
             connection.execute(
-                """UPDATE batch_control SET status = ?, batch_end_time = ?, records_processed = ?,
-                   records_persisted = ?, error_message = ?, staged_path = NULL,
-                   commit_state = CASE WHEN ? = 'SUCCESS' THEN 'COMMITTED' ELSE commit_state END WHERE batch_id = ?""",
-                (status, finished_at, records_processed,
-                 records_processed if records_persisted is None else records_persisted,
-                 error_message, status, batch_id),
+                """UPDATE batch_control SET
+                    status = ?,
+                    stage = ?,
+                    batch_end_time = ?,
+                    duration_seconds = ?,
+                    records_processed = ?,
+                    records_persisted = ?,
+                    records_silver = ?,
+                    records_scd2_changed = COALESCE(?, records_scd2_changed),
+                    records_rejected = ?,
+                    records_failed = ?,
+                    reconciliation_status = ?,
+                    reconciliation_discrepancy = ?,
+                    error_message = ?,
+                    staged_path = NULL,
+                    silver_path = COALESCE(?, silver_path),
+                    rejected_path = COALESCE(?, rejected_path),
+                    commit_state = CASE WHEN ? IN ('SUCCESS', 'PARTIAL_SUCCESS') THEN 'COMMITTED' ELSE commit_state END
+                WHERE batch_id = ?""",
+                (
+                    status_val,
+                    stage,
+                    finished_at,
+                    duration_seconds,
+                    records_processed,
+                    persisted,
+                    records_silver,
+                    records_scd2_changed,
+                    records_rejected,
+                    records_failed,
+                    recon_status,
+                    recon_discrepancy,
+                    cleaned_error,
+                    str(silver_path) if silver_path is not None else None,
+                    str(rejected_path) if rejected_path is not None else None,
+                    status_val,
+                    batch_id,
+                ),
             )
+
+    def get_audit_summary(
+        self,
+        batch_id: str | None = None,
+        submission_key: str | None = None,
+    ) -> list[BatchAuditSummary]:
+        query = "SELECT * FROM batch_control WHERE 1=1"
+        params: list[Any] = []
+        if batch_id is not None:
+            query += " AND batch_id = ?"
+            params.append(batch_id)
+        if submission_key is not None:
+            query += " AND submission_key = ?"
+            params.append(submission_key)
+        query += " ORDER BY batch_start_time ASC"
+
+        with sqlite3.connect(self.database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(query, params).fetchall()
+
+        summaries: list[BatchAuditSummary] = []
+        for row in rows:
+            raw_status = row["status"]
+            try:
+                status_enum = BatchStatus(raw_status)
+            except ValueError:
+                status_enum = BatchStatus.FAILED
+
+            recon_status = row["reconciliation_status"] or ReconciliationStatus.INCOMPLETE.value
+            try:
+                recon_status_val = ReconciliationStatus(recon_status).value
+            except ValueError:
+                recon_status_val = recon_status
+
+            summaries.append(
+                BatchAuditSummary(
+                    batch_id=row["batch_id"],
+                    source_name=row["source_name"],
+                    status=status_enum,
+                    stage=row["stage"] or "BRONZE",
+                    batch_start_time=row["batch_start_time"],
+                    batch_end_time=row["batch_end_time"],
+                    duration_seconds=row["duration_seconds"],
+                    records_read=row["records_processed"] or 0,
+                    records_bronze=row["records_persisted"] or 0,
+                    records_silver=row["records_silver"] or 0,
+                    records_scd2_changed=row["records_scd2_changed"],
+                    records_rejected=row["records_rejected"] or 0,
+                    records_failed=row["records_failed"],
+                    reconciliation_status=recon_status_val,
+                    reconciliation_discrepancy=row["reconciliation_discrepancy"] or "",
+                    error_message=row["error_message"],
+                    submission_key=row["submission_key"],
+                    idempotent_replay=False,
+                )
+            )
+        return summaries
 
     def recover_stale(self, stale_after: timedelta = timedelta(minutes=5)) -> int:
         """Recover abandoned (expired-lease) batches; age alone never takes ownership."""
@@ -273,24 +529,57 @@ class BatchTracker:
         for row in rows:
             if self.lease_is_active(row):
                 continue
-            staged = Path(row["staged_path"]) if row["staged_path"] else None
-            destination = Path(row["bronze_path"]) if row["bronze_path"] else None
-            if not destination:
+            bronze_path = Path(row["bronze_path"]) if row["bronze_path"] else None
+            if not bronze_path:
                 continue
-            with _destination_lock(destination):
+            with _destination_lock(bronze_path):
                 current = self.find_batch(row["batch_id"])
                 if not current or current["status"] != "RUNNING" or self.lease_is_active(current):
                     continue
-                # Destination evidence wins over stale metadata after publication.
-                if _destination_has_batch(destination, current["batch_id"]):
-                    self.finish(current["batch_id"], "SUCCESS", current["records_processed"], datetime.now(timezone.utc).isoformat())
+                # Destination evidence wins over stale metadata only when all expected outputs committed
+                if _all_destinations_have_batch(current):
+                    silver_path = Path(current["silver_path"]) if current["silver_path"] else None
+                    rejected_path = Path(current["rejected_path"]) if current["rejected_path"] else None
+                    records_silver = current["records_silver"]
+                    is_scd2 = current["records_scd2_changed"] is not None
+                    if not is_scd2 and (records_silver is None or records_silver == 0) and silver_path:
+                        records_silver = _count_records_for_batch(silver_path, current["batch_id"])
+                    records_silver = records_silver or 0
+
+                    records_rejected = current["records_rejected"]
+                    if (records_rejected is None or records_rejected == 0) and rejected_path:
+                        records_rejected = _count_records_for_batch(rejected_path, current["batch_id"])
+                    records_rejected = records_rejected or 0
+
+                    records_failed = current["records_failed"] or 0
+                    final_status = "PARTIAL_SUCCESS" if records_rejected > 0 else "SUCCESS"
+                    self.finish(
+                        current["batch_id"],
+                        final_status,
+                        current["records_processed"],
+                        datetime.now(timezone.utc).isoformat(),
+                        records_persisted=current["records_persisted"],
+                        records_silver=records_silver,
+                        records_scd2_changed=current["records_scd2_changed"],
+                        records_rejected=records_rejected,
+                        records_failed=records_failed,
+                        stage="COMPLETED",
+                        silver_path=silver_path,
+                        rejected_path=rejected_path,
+                    )
                 else:
-                    # Do not promote an old full-file snapshot: a later batch may
-                    # have committed after this process crashed.
                     staged = Path(current["staged_path"]) if current["staged_path"] else None
                     if staged and staged.exists():
                         staged.unlink()
-                    self.finish(current["batch_id"], "FAILED", current["records_processed"], datetime.now(timezone.utc).isoformat(), 0, "Abandoned before Bronze commit; retry the submission key.")
+                    self.finish(
+                        current["batch_id"],
+                        "FAILED",
+                        current["records_processed"],
+                        datetime.now(timezone.utc).isoformat(),
+                        records_persisted=0,
+                        error_message="Abandoned before full commit; retry the submission key.",
+                        reconciliation_status=ReconciliationStatus.INCOMPLETE.value,
+                    )
             recovered += 1
         return recovered
 
@@ -327,24 +616,185 @@ class LocalBronzeStore:
         return count
 
 
+def _count_records_for_batch(destination: Path, batch_id: str) -> int:
+    """Count how many valid records for batch_id exist in destination."""
+    if not destination.exists():
+        return 0
+    count = 0
+    try:
+        with destination.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    if (
+                        record.get("_ingestion_batch_id") == batch_id
+                        or record.get("_silver_batch_id") == batch_id
+                        or record.get("_rejection_batch_id") == batch_id
+                    ):
+                        count += 1
+                except json.JSONDecodeError:
+                    continue
+        return count
+    except (OSError, UnicodeDecodeError):
+        return 0
+
+
 def _destination_has_batch(destination: Path, batch_id: str) -> bool:
     if not destination.exists():
         return False
     try:
-        return any(
-            json.loads(line).get("_ingestion_batch_id") == batch_id
-            for line in destination.read_text(encoding="utf-8").splitlines() if line.strip()
-        )
-    except json.JSONDecodeError:
+        with destination.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    if (
+                        record.get("_ingestion_batch_id") == batch_id
+                        or record.get("_silver_batch_id") == batch_id
+                        or record.get("_rejection_batch_id") == batch_id
+                    ):
+                        return True
+                except json.JSONDecodeError:
+                    continue
+        return False
+    except (OSError, UnicodeDecodeError):
         return False
 
 
-def _reconcile_committed_batch(tracker: BatchTracker, row: sqlite3.Row, destination: Path) -> bool:
-    """Finalize metadata when publication succeeded before SQLite finalization."""
-    if _destination_has_batch(destination, row["batch_id"]):
-        tracker.finish(row["batch_id"], "SUCCESS", row["records_processed"],
-                       datetime.now(timezone.utc).isoformat(), row["records_processed"])
+def _all_destinations_have_batch(row: sqlite3.Row) -> bool:
+    batch_id = row["batch_id"]
+    commit_state = row["commit_state"] if "commit_state" in row.keys() else "NONE"
+    records_persisted = row["records_persisted"] if "records_persisted" in row.keys() else 0
+    records_silver = row["records_silver"] if "records_silver" in row.keys() else 0
+    records_scd2_changed = row["records_scd2_changed"] if "records_scd2_changed" in row.keys() else None
+    records_rejected = row["records_rejected"] if "records_rejected" in row.keys() else 0
+
+    # 1. Check Bronze destination
+    bronze_path = Path(row["bronze_path"]) if row["bronze_path"] else None
+    if not bronze_path or not bronze_path.exists():
+        return False
+    staged_bronze = bronze_path.with_name(f".{bronze_path.name}.{batch_id}.staged")
+    if staged_bronze.exists():
+        return False
+    if records_persisted and records_persisted > 0:
+        if not _destination_has_batch(bronze_path, batch_id):
+            return False
+    else:
+        # 0 bronze records: durable evidence is file existence, no staging, and committed state
+        if commit_state not in ("BRONZE_COMMITTED", "OUTPUTS_STAGED", "COMMITTED"):
+            return False
+
+    # 2. Check if Bronze-only pipeline
+    silver_path = Path(row["silver_path"]) if row["silver_path"] else None
+    if not silver_path:
         return True
+
+    # 3. Check Silver destination
+    if not silver_path.exists():
+        return False
+    staged_silver = silver_path.with_name(f".{silver_path.name}.{batch_id}.staged")
+    if staged_silver.exists():
+        return False
+
+    silver_has = _destination_has_batch(silver_path, batch_id)
+    expected_silver_records = records_scd2_changed if records_scd2_changed is not None else records_silver
+    if records_scd2_changed is not None:
+        # A valid SCD2 input may be unchanged, so only inserted versions are
+        # expected to appear physically with this batch's lineage identifier.
+        if _count_records_for_batch(silver_path, batch_id) != records_scd2_changed:
+            return False
+    if expected_silver_records and expected_silver_records > 0:
+        if not silver_has:
+            return False
+
+    # 4. Check Quarantine destination
+    rejected_path = Path(row["rejected_path"]) if row["rejected_path"] else None
+    if rejected_path:
+        staged_quarantine = rejected_path.with_name(f".{rejected_path.name}.{batch_id}.staged")
+        if staged_quarantine.exists():
+            return False
+        if records_rejected and records_rejected > 0:
+            if not rejected_path.exists():
+                return False
+            if not _destination_has_batch(rejected_path, batch_id):
+                return False
+        rejected_has = _destination_has_batch(rejected_path, batch_id) if rejected_path.exists() else False
+    else:
+        rejected_has = False
+
+    # 5. Publication completeness and empty-output verification
+    # When no physical Silver records were written, record-level IDs cannot identify the empty output.
+    # Durable evidence of publication completion requires commit_state == "COMMITTED".
+    if expected_silver_records == 0:
+        if commit_state != "COMMITTED":
+            return False
+    else:
+        if not silver_has:
+            return False
+        if records_rejected and records_rejected > 0 and not rejected_has:
+            return False
+
+    return True
+
+
+def _reconcile_committed_batch(tracker: BatchTracker, row: sqlite3.Row, destination: Path | None = None) -> bool:
+    """Finalize metadata when publication succeeded before SQLite finalization."""
+    if row["silver_path"]:
+        if _all_destinations_have_batch(row):
+            silver_path = Path(row["silver_path"])
+            rejected_path = Path(row["rejected_path"]) if row["rejected_path"] else None
+
+            records_silver = row["records_silver"]
+            is_scd2 = row["records_scd2_changed"] is not None
+            if not is_scd2 and (records_silver is None or records_silver == 0) and silver_path:
+                records_silver = _count_records_for_batch(silver_path, row["batch_id"])
+            records_silver = records_silver or 0
+
+            records_rejected = row["records_rejected"]
+            if (records_rejected is None or records_rejected == 0) and rejected_path:
+                records_rejected = _count_records_for_batch(rejected_path, row["batch_id"])
+            records_rejected = records_rejected or 0
+
+            records_failed = row["records_failed"] or 0
+            final_status = "PARTIAL_SUCCESS" if records_rejected > 0 else "SUCCESS"
+            tracker.finish(
+                row["batch_id"],
+                final_status,
+                row["records_processed"],
+                datetime.now(timezone.utc).isoformat(),
+                records_persisted=row["records_persisted"],
+                records_silver=records_silver,
+                records_scd2_changed=row["records_scd2_changed"],
+                records_rejected=records_rejected,
+                records_failed=records_failed,
+                stage="COMPLETED",
+                silver_path=silver_path,
+                rejected_path=rejected_path,
+            )
+            return True
+        return False
+    dest = destination or (Path(row["bronze_path"]) if row["bronze_path"] else None)
+    if dest and dest.exists():
+        commit_state = row["commit_state"] if "commit_state" in row.keys() else "NONE"
+        records_persisted = row["records_persisted"] if "records_persisted" in row.keys() else 0
+        has_bronze = False
+        if records_persisted > 0:
+            has_bronze = _destination_has_batch(dest, row["batch_id"])
+        else:
+            staged_bronze = dest.with_name(f".{dest.name}.{row['batch_id']}.staged")
+            has_bronze = not staged_bronze.exists() and commit_state in ("BRONZE_COMMITTED", "OUTPUTS_STAGED", "COMMITTED")
+        if has_bronze:
+            tracker.finish(
+                row["batch_id"],
+                "SUCCESS",
+                row["records_processed"],
+                datetime.now(timezone.utc).isoformat(),
+                row["records_processed"],
+            )
+            return True
     return False
 
 
@@ -405,11 +855,13 @@ def ingest(config_path: str | Path, submission_key: str | None = None) -> dict[s
                         return {"batch_id": existing["batch_id"], "source_name": existing["source_name"], "records_processed": existing["records_processed"], "bronze_path": existing["bronze_path"], "idempotent_replay": True}
                 if tracker.lease_is_active(existing):
                     raise RuntimeError("Submission key is currently owned by an active ingestion")
-                tracker.restart(existing["batch_id"], lease_token)
+                if not tracker.restart(existing["batch_id"], lease_token, expected_lease_token=existing["lease_token"]):
+                    raise RuntimeError("Submission key is currently owned by an active ingestion")
                 batch_id = existing["batch_id"]
             else:
                 batch_id = existing["batch_id"]
-                tracker.restart(batch_id, lease_token)
+                if not tracker.restart(batch_id, lease_token, expected_lease_token=existing["lease_token"]):
+                    raise RuntimeError("Submission key is currently owned by an active ingestion")
         else:
             batch_id = tracker.start(config, timestamp, submission_key, fingerprint, lease_token)
     else:
