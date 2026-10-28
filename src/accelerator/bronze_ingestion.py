@@ -649,47 +649,69 @@ def _destination_has_batch(destination: Path, batch_id: str) -> bool:
 
 def _all_destinations_have_batch(row: sqlite3.Row) -> bool:
     batch_id = row["batch_id"]
-    bronze_path = Path(row["bronze_path"]) if row["bronze_path"] else None
-    if not bronze_path or not _destination_has_batch(bronze_path, batch_id):
-        return False
+    commit_state = row["commit_state"] if "commit_state" in row.keys() else "NONE"
+    records_persisted = row["records_persisted"] if "records_persisted" in row.keys() else 0
+    records_silver = row["records_silver"] if "records_silver" in row.keys() else 0
+    records_rejected = row["records_rejected"] if "records_rejected" in row.keys() else 0
 
+    # 1. Check Bronze destination
+    bronze_path = Path(row["bronze_path"]) if row["bronze_path"] else None
+    if not bronze_path or not bronze_path.exists():
+        return False
+    staged_bronze = bronze_path.with_name(f".{bronze_path.name}.{batch_id}.staged")
+    if staged_bronze.exists():
+        return False
+    if records_persisted and records_persisted > 0:
+        if not _destination_has_batch(bronze_path, batch_id):
+            return False
+    else:
+        # 0 bronze records: durable evidence is file existence, no staging, and committed state
+        if commit_state not in ("BRONZE_COMMITTED", "OUTPUTS_STAGED", "COMMITTED"):
+            return False
+
+    # 2. Check if Bronze-only pipeline
     silver_path = Path(row["silver_path"]) if row["silver_path"] else None
     if not silver_path:
         return True
 
-    rejected_path = Path(row["rejected_path"]) if row["rejected_path"] else None
-
-    # Check for uncommitted staged files
+    # 3. Check Silver destination
+    if not silver_path.exists():
+        return False
     staged_silver = silver_path.with_name(f".{silver_path.name}.{batch_id}.staged")
     if staged_silver.exists():
         return False
 
+    silver_has = _destination_has_batch(silver_path, batch_id)
+    if records_silver and records_silver > 0:
+        if not silver_has:
+            return False
+
+    # 4. Check Quarantine destination
+    rejected_path = Path(row["rejected_path"]) if row["rejected_path"] else None
     if rejected_path:
         staged_quarantine = rejected_path.with_name(f".{rejected_path.name}.{batch_id}.staged")
         if staged_quarantine.exists():
             return False
+        if records_rejected and records_rejected > 0:
+            if not rejected_path.exists():
+                return False
+            if not _destination_has_batch(rejected_path, batch_id):
+                return False
+        rejected_has = _destination_has_batch(rejected_path, batch_id) if rejected_path.exists() else False
+    else:
+        rejected_has = False
 
-    records_silver = row["records_silver"]
-    records_rejected = row["records_rejected"]
-    commit_state = row["commit_state"] if "commit_state" in row.keys() else "NONE"
-
-    silver_has = _destination_has_batch(silver_path, batch_id)
-    if records_silver and records_silver > 0 and not silver_has:
-        return False
-
-    if rejected_path and records_rejected and records_rejected > 0:
-        if not _destination_has_batch(rejected_path, batch_id):
+    # 5. Publication completeness and empty-output verification
+    # When records_silver == 0, record-level IDs cannot identify the empty output.
+    # Durable evidence of publication completion requires commit_state == "COMMITTED".
+    if records_silver == 0:
+        if commit_state != "COMMITTED":
             return False
-
-    # Never mark a batch complete based solely on the presence of a batch ID in one destination
-    # if commit_state is not COMMITTED
-    if commit_state != "COMMITTED" and rejected_path:
-        if not _destination_has_batch(rejected_path, batch_id):
+    else:
+        if not silver_has:
             return False
-
-    rejected_has = _destination_has_batch(rejected_path, batch_id) if rejected_path else False
-    if not silver_has and not rejected_has:
-        return False
+        if records_rejected and records_rejected > 0 and not rejected_has:
+            return False
 
     return True
 
@@ -729,15 +751,24 @@ def _reconcile_committed_batch(tracker: BatchTracker, row: sqlite3.Row, destinat
             return True
         return False
     dest = destination or (Path(row["bronze_path"]) if row["bronze_path"] else None)
-    if dest and _destination_has_batch(dest, row["batch_id"]):
-        tracker.finish(
-            row["batch_id"],
-            "SUCCESS",
-            row["records_processed"],
-            datetime.now(timezone.utc).isoformat(),
-            row["records_processed"],
-        )
-        return True
+    if dest and dest.exists():
+        commit_state = row["commit_state"] if "commit_state" in row.keys() else "NONE"
+        records_persisted = row["records_persisted"] if "records_persisted" in row.keys() else 0
+        has_bronze = False
+        if records_persisted > 0:
+            has_bronze = _destination_has_batch(dest, row["batch_id"])
+        else:
+            staged_bronze = dest.with_name(f".{dest.name}.{row['batch_id']}.staged")
+            has_bronze = not staged_bronze.exists() and commit_state in ("BRONZE_COMMITTED", "OUTPUTS_STAGED", "COMMITTED")
+        if has_bronze:
+            tracker.finish(
+                row["batch_id"],
+                "SUCCESS",
+                row["records_processed"],
+                datetime.now(timezone.utc).isoformat(),
+                row["records_processed"],
+            )
+            return True
     return False
 
 

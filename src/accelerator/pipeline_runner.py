@@ -310,7 +310,7 @@ def run_pipeline(
                                 os.fsync(sf.fileno())
                             os.replace(staged_silver, silver_path)
                     # If existing_silver_count == len(valid_silver), publication is already complete!
-                else:
+                elif valid_silver or not silver_path.exists():
                     with _destination_lock(silver_path):
                         silver_path.parent.mkdir(parents=True, exist_ok=True)
                         with staged_silver.open("w", encoding="utf-8", newline="\n") as sf:
@@ -323,17 +323,16 @@ def run_pipeline(
                         os.replace(staged_silver, silver_path)
 
             # Quarantine publication: batch-aware to prevent duplicates on replay
-            if staged_quarantine and rejected_path:
-                quarantine_already_has_batch = (
-                    _destination_has_batch(rejected_path, batch_id) if rejected_path.exists() else False
-                )
+            if rejected_path and rejected_path.exists():
+                quarantine_already_has_batch = _destination_has_batch(rejected_path, batch_id)
                 if quarantine_already_has_batch:
                     existing_q_count = _count_records_for_batch(rejected_path, batch_id)
                     if existing_q_count != len(quarantined):
                         # Partial or corrupted quarantine output - repair
+                        staged_q = staged_quarantine or rejected_path.with_name(f".{rejected_path.name}.{batch_id}.staged")
                         with _destination_lock(rejected_path):
                             rejected_path.parent.mkdir(parents=True, exist_ok=True)
-                            with staged_quarantine.open("w", encoding="utf-8", newline="\n") as qf:
+                            with staged_q.open("w", encoding="utf-8", newline="\n") as qf:
                                 with rejected_path.open("r", encoding="utf-8") as existing_f:
                                     for line in existing_f:
                                         if not line.strip():
@@ -349,9 +348,9 @@ def run_pipeline(
                                     qf.write(json.dumps(r, ensure_ascii=False, default=str) + "\n")
                                 qf.flush()
                                 os.fsync(qf.fileno())
-                            os.replace(staged_quarantine, rejected_path)
-                    # If existing_q_count == len(quarantined), quarantine publication is already complete!
-                else:
+                            os.replace(staged_q, rejected_path)
+            if staged_quarantine and rejected_path and quarantined:
+                if not (rejected_path.exists() and _destination_has_batch(rejected_path, batch_id)):
                     with _destination_lock(rejected_path):
                         rejected_path.parent.mkdir(parents=True, exist_ok=True)
                         with staged_quarantine.open("w", encoding="utf-8", newline="\n") as qf:

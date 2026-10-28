@@ -725,3 +725,194 @@ def test_legacy_database_migration_with_none_status(tmp_path: Path) -> None:
     assert ReconciliationStatus.NONE == "NONE"
 
 
+def test_valid_empty_batch_produces_zero_records_and_reconciles_and_replays_idempotently(tmp_path: Path) -> None:
+    """15. Valid batch that produces 0 Silver and 0 Quarantined records reconciles and replays idempotently."""
+    from accelerator.bronze_ingestion import _all_destinations_have_batch
+
+    csv_empty = "customer_id,customer_name,postal_code\n"
+    config_path = make_pipeline_config(tmp_path, csv_content=csv_empty)
+
+    summary = run_pipeline(config_path, submission_key="empty-batch-key-1")
+
+    assert summary.status == BatchStatus.SUCCESS
+    assert summary.records_read == 0
+    assert summary.records_bronze == 0
+    assert summary.records_silver == 0
+    assert summary.records_rejected == 0
+    assert summary.records_failed == 0
+    assert summary.reconciliation_status == ReconciliationStatus.RECONCILED.value
+    assert summary.idempotent_replay is False
+
+    bronze_path = tmp_path / "bronze" / "customers_raw.jsonl"
+    silver_path = tmp_path / "silver" / "dim_customers.jsonl"
+    quarantine_path = tmp_path / "silver" / "quarantine_customers.jsonl"
+
+    # Durable publication evidence: required destinations exist on disk and no uncommitted files exist
+    assert bronze_path.exists()
+    assert silver_path.exists()
+    assert not quarantine_path.exists()  # Zero rejected records produces no quarantine file
+
+    tracker = BatchTracker(tmp_path / "metadata" / "audit.db")
+    row = tracker.find_submission("empty-batch-key-1")
+    assert row is not None
+    assert row["commit_state"] == "COMMITTED"
+    assert row["records_processed"] == 0
+    assert _all_destinations_have_batch(row) is True
+
+    # Replaying same submission key returns idempotent summary without re-executing
+    replay_summary = run_pipeline(config_path, submission_key="empty-batch-key-1")
+    assert replay_summary.idempotent_replay is True
+    assert replay_summary.batch_id == summary.batch_id
+    assert replay_summary.records_read == 0
+    assert replay_summary.records_silver == 0
+    assert replay_summary.records_rejected == 0
+    assert replay_summary.reconciliation_status == ReconciliationStatus.RECONCILED.value
+
+
+def test_distinguish_published_empty_outputs_from_missing_required_outputs(tmp_path: Path) -> None:
+    """16. Distinguish published empty outputs from missing files; never mark complete when destination is missing."""
+    from accelerator.bronze_ingestion import _all_destinations_have_batch, _reconcile_committed_batch
+
+    csv_empty = "customer_id,customer_name,postal_code\n"
+    config_path = make_pipeline_config(tmp_path, csv_content=csv_empty)
+    summary = run_pipeline(config_path, submission_key="empty-distinguish-key")
+    assert summary.status == BatchStatus.SUCCESS
+
+    tracker = BatchTracker(tmp_path / "metadata" / "audit.db")
+    row = tracker.find_submission("empty-distinguish-key")
+    assert row is not None
+    # When required silver and bronze outputs are present, empty batch is confirmed valid
+    assert _all_destinations_have_batch(row) is True
+
+    silver_path = tmp_path / "silver" / "dim_customers.jsonl"
+    assert silver_path.exists()
+
+    # Case A: Silver destination is missing (e.g. deleted or failed publication)
+    silver_path.unlink()
+    assert not silver_path.exists()
+    # Must distinguish missing output from empty output
+    assert _all_destinations_have_batch(row) is False
+
+    # Simulate recovery attempt: must NOT mark complete when a required destination is missing
+    with sqlite3.connect(tmp_path / "metadata" / "audit.db") as conn:
+        conn.execute(
+            "UPDATE batch_control SET status = 'RUNNING', lease_expires_at = ? WHERE batch_id = ?",
+            ((datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(), summary.batch_id),
+        )
+    row_running = tracker.find_batch(summary.batch_id)
+    assert not _reconcile_committed_batch(tracker, row_running)
+    row_check = tracker.find_batch(summary.batch_id)
+    assert row_check["status"] != "SUCCESS"
+
+    # Replay detects missing output, re-stages and republishes all required destinations
+    replay_summary = run_pipeline(config_path, submission_key="empty-distinguish-key")
+    assert replay_summary.status == BatchStatus.SUCCESS
+    assert silver_path.exists()
+
+
+def test_recovery_never_marks_complete_when_quarantine_missing_for_rejected_batch(tmp_path: Path) -> None:
+    """17. When quarantine output is missing for a batch with rejections, recovery refuses to mark complete."""
+    from accelerator.bronze_ingestion import _all_destinations_have_batch
+
+    rules = [
+        {"rule_name": "not_null", "columns": ["customer_id"], "severity": "reject"},
+    ]
+    csv_data = (
+        "customer_id,customer_name,postal_code\n"
+        ",No ID Customer,99999\n"
+    )
+    config_path = make_pipeline_config(tmp_path, csv_content=csv_data, quality_rules=rules)
+    summary = run_pipeline(config_path, submission_key="quarantine-missing-key")
+    assert summary.status == BatchStatus.PARTIAL_SUCCESS
+    assert summary.records_rejected == 1
+
+    quarantine_path = tmp_path / "silver" / "quarantine_customers.jsonl"
+    assert quarantine_path.exists()
+    quarantine_path.unlink()
+    assert not quarantine_path.exists()
+
+    tracker = BatchTracker(tmp_path / "metadata" / "audit.db")
+    row = tracker.find_submission("quarantine-missing-key")
+    assert _all_destinations_have_batch(row) is False
+
+    # Expire lease to simulate dead worker
+    with sqlite3.connect(tmp_path / "metadata" / "audit.db") as conn:
+        conn.execute(
+            "UPDATE batch_control SET status = 'RUNNING', lease_expires_at = ? WHERE batch_id = ?",
+            ((datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(), summary.batch_id),
+        )
+
+    # Replay cannot be a shortcut; it repairs missing destination
+    replay_summary = run_pipeline(config_path, submission_key="quarantine-missing-key")
+    assert replay_summary.status == BatchStatus.PARTIAL_SUCCESS
+    assert replay_summary.records_rejected == 1
+    assert quarantine_path.exists()
+
+
+def test_crash_recovery_for_empty_batch_before_finish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """18. Crash after publication of empty outputs before finish is reconciled safely via durable commit_state."""
+    csv_empty = "customer_id,customer_name,postal_code\n"
+    config_path = make_pipeline_config(tmp_path, csv_content=csv_empty)
+
+    original_finish = BatchTracker.finish
+    crashed = False
+
+    def crash_before_final_finish(self: BatchTracker, batch_id: str, status: Any, *args: Any, **kwargs: Any) -> None:
+        nonlocal crashed
+        if kwargs.get("stage") == "COMPLETED":
+            crashed = True
+            raise RuntimeError("Fault injection: crash after publication of empty batch before finish")
+        original_finish(self, batch_id, status, *args, **kwargs)
+
+    monkeypatch.setattr(BatchTracker, "finish", crash_before_final_finish)
+
+    with pytest.raises(RuntimeError, match="Fault injection: crash after publication of empty batch"):
+        run_pipeline(config_path, submission_key="empty-crash-before-finish")
+
+    assert crashed is True
+    monkeypatch.undo()
+
+    # Replay with same submission key recovers via _reconcile_committed_batch using durable evidence
+    replay_summary = run_pipeline(config_path, submission_key="empty-crash-before-finish")
+    assert replay_summary.idempotent_replay is True
+    assert replay_summary.status == BatchStatus.SUCCESS
+    assert replay_summary.records_read == 0
+    assert replay_summary.records_silver == 0
+    assert replay_summary.records_rejected == 0
+    assert replay_summary.reconciliation_status == ReconciliationStatus.RECONCILED.value
+
+
+def test_bronze_only_empty_batch_recovery_and_replay(tmp_path: Path) -> None:
+    """19. Bronze-only pipeline with 0 records reconciles and verifies required destinations."""
+    from accelerator.bronze_ingestion import _all_destinations_have_batch
+
+    input_file = tmp_path / "input_empty.csv"
+    input_file.write_text("col_a,col_b\n", encoding="utf-8")
+    cfg = {
+        "source_name": "bronze_empty_source",
+        "format": "csv",
+        "input_path": str(input_file),
+        "bronze_path": str(tmp_path / "bronze" / "empty_raw.jsonl"),
+        "metadata_store": str(tmp_path / "metadata" / "audit.db"),
+    }
+    cfg_path = tmp_path / "bronze_empty_config.json"
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    result = ingest(cfg_path, submission_key="bronze-empty-key")
+    assert result["records_processed"] == 0
+
+    tracker = BatchTracker(tmp_path / "metadata" / "audit.db")
+    summaries = tracker.get_audit_summary(batch_id=result["batch_id"])
+    assert len(summaries) == 1
+    assert summaries[0].status == BatchStatus.SUCCESS
+    assert summaries[0].records_bronze == 0
+    assert summaries[0].reconciliation_status == ReconciliationStatus.RECONCILED.value
+
+    row = tracker.find_batch(result["batch_id"])
+    assert _all_destinations_have_batch(row) is True
+
+    # If bronze destination is deleted, _all_destinations_have_batch returns False
+    Path(result["bronze_path"]).unlink()
+    assert _all_destinations_have_batch(row) is False

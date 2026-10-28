@@ -79,7 +79,7 @@ class Scd2Processor:
             applied_by_batch[(key, batch_id)] = new_version
             inserted += 1
 
-        if inserted:
+        if inserted or not target_path.exists():
             self._write_dimension_atomically(target_path, existing)
         return inserted
 
