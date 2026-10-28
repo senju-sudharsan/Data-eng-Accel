@@ -64,7 +64,7 @@ def _pipeline_fingerprint(config: PipelineConfig) -> str:
 
 
 def run_pipeline(
-    config_path: str | Path,
+    config_path: str | Path | PipelineConfig,
     submission_key: str | None = None,
 ) -> BatchAuditSummary:
     """Execute an end-to-end Bronze–Silver data pipeline.
@@ -81,7 +81,10 @@ def run_pipeline(
     BatchAuditSummary:
         Detailed execution and reconciliation metrics for the batch.
     """
-    config = load_pipeline_config(config_path)
+    if isinstance(config_path, PipelineConfig):
+        config = config_path
+    else:
+        config = load_pipeline_config(config_path)
     timestamp = datetime.now(timezone.utc).isoformat()
     tracker = BatchTracker(config.metadata_store)
     fingerprint = _pipeline_fingerprint(config)

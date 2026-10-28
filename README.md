@@ -21,12 +21,13 @@ The framework separates execution logic from dataset-specific definitions throug
 
 ```
 C:\Data-eng-Accel\
+├── config.yml                              # Central authoritative multi-source and pipeline config
 ├── config/
-│   ├── source_customers.json               # Baseline Bronze config (CSV)
-│   ├── source_customers_alternate.json     # Alternate Bronze config (CSV)
-│   └── dataset_customers_pipeline.json     # Reference end-to-end Bronze-Silver-SCD2 config
+│   ├── source_customers.json               # Baseline Bronze config (CSV, backward compatible)
+│   ├── source_customers_alternate.json     # Alternate Bronze config (CSV, backward compatible)
+│   └── dataset_customers_pipeline.json     # Reference end-to-end config (backward compatible)
 ├── data/
-│   ├── fixtures/                           # Source CSV data fixtures
+│   ├── fixtures/                           # Source CSV data fixtures & archive datasets
 │   ├── bronze/                             # Landed raw JSONL files (gitignored)
 │   ├── silver/                             # Conformed & quarantine JSONL files (gitignored)
 │   └── metadata/                           # SQLite batch tracking database (gitignored)
@@ -35,17 +36,26 @@ C:\Data-eng-Accel\
 │   ├── data_contracts/                     # Canonical schema and component interface specifications
 │   └── decisions/                          # Architectural Decision Records (ADRs AD-001 - AD-010)
 ├── scripts/
-│   └── run_bronze_ingestion.py             # CLI runner for Bronze ingestion
+│   ├── run_bronze_ingestion.py             # CLI runner for Bronze ingestion (YAML and JSON support)
+│   └── run_pipeline.py                     # CLI runner for end-to-end pipelines (YAML and JSON support)
 ├── src/
 │   └── accelerator/
 │       ├── __init__.py                     # Package exports
-│       ├── contracts.py                    # Schema models, enums, protocols, config loader
-│       └── bronze_ingestion.py             # CSV/JSON readers, LocalBronzeStore, BatchTracker
-│       └── silver_transformations.py       # Canonical schema mapping, type casting, lineage, hashing (Phase 3)
+│       ├── contracts.py                    # Schema models, enums, protocols, config models
+│       ├── config_loader.py                # Central YAML config loader and validator
+│       ├── bronze_ingestion.py             # CSV/JSON readers, LocalBronzeStore, BatchTracker
+│       ├── silver_transformations.py       # Canonical schema mapping, casting, lineage, hashing
+│       ├── scd2.py                         # SCD Type 2 dimension merge engine
+│       ├── audit.py                        # Batch audit store and reconciliation
+│       └── pipeline_runner.py              # End-to-end pipeline orchestrator
 └── tests/
     ├── test_bronze_ingestion.py            # Baseline Bronze ingestion tests
-    └── test_contracts.py                   # Schema and component contract tests
-    └── test_silver_transformations.py      # Silver transformation unit & contract tests (Phase 3)
+    ├── test_contracts.py                   # Schema and component contract tests
+    ├── test_silver_transformations.py      # Silver transformation unit & contract tests
+    ├── test_scd2.py                        # SCD2 dimension tests
+    ├── test_audit.py                       # Batch tracking, audit & reconciliation tests
+    ├── test_pipeline_runner.py             # End-to-end orchestration & replay idempotency tests
+    └── test_config_loader.py               # Central config.yml parsing, validation & CLI tests
 ```
 
 ---
@@ -122,6 +132,63 @@ memory use grows with both the incoming batch and existing destination; a
 million-row source can require substantial memory. A future streaming staging
 implementation should preserve atomic publication and partial-count/error
 semantics before replacing this deliberately simple local approach.
+
+---
+
+## Centralized Configuration (`config.yml`)
+
+The accelerator provides a single root-level `config.yml` as the authoritative configuration entry point. It manages source definitions, shared path defaults, Silver transformations, data quality rules, and SCD2 dimensions across all ingestion workflows.
+
+### Structure of `config.yml`
+- **`version: 1`**: Schema format version (strictly validated).
+- **`defaults`**: Global folder paths (`fixtures_dir`, `bronze_dir`, `silver_dir`, `metadata_dir`) and default file properties (`delimiter`, `encoding`, `format`).
+- **`sources`**: Reusable source catalog specifying input paths, Bronze landing paths, format, and encodings (e.g., `utf-8-sig` for BOM-encoded CSV files like `product_category_name_translation.csv`).
+- **`pipelines`**: End-to-end pipeline definitions linking a declared source with target Silver schemas, column mappings, data quality checks, and SCD2 tracking.
+
+### CLI Execution
+
+Both CLI scripts support the central `config.yml` as well as backward-compatible standalone JSON configurations:
+
+#### 1. Bronze Ingestion Runner (`scripts/run_bronze_ingestion.py`)
+```powershell
+# Using central config.yml with named source
+.\.venv\Scripts\python.exe scripts/run_bronze_ingestion.py --config config.yml --source assessment_customers
+
+# Ingest Olist products from central config
+.\.venv\Scripts\python.exe scripts/run_bronze_ingestion.py --config config.yml --source olist_products
+
+# Backward-compatible standalone JSON config
+.\.venv\Scripts\python.exe scripts/run_bronze_ingestion.py config/source_customers.json
+```
+
+#### 2. End-to-End Pipeline Runner (`scripts/run_pipeline.py`)
+```powershell
+# Execute complete Bronze -> Silver -> SCD2 pipeline via central config.yml
+.\.venv\Scripts\python.exe scripts/run_pipeline.py --config config.yml --pipeline customers
+
+# Execute Olist products dimension pipeline (32,951 records)
+.\.venv\Scripts\python.exe scripts/run_pipeline.py --config config.yml --pipeline olist_products
+
+# Backward-compatible standalone JSON config
+.\.venv\Scripts\python.exe scripts/run_pipeline.py config/dataset_customers_pipeline.json
+```
+
+### Python API Integration
+```python
+from accelerator import load_central_config, ingest, run_pipeline
+
+# Load and validate central config
+central_cfg = load_central_config("config.yml")
+
+# Ingest single source into Bronze
+source_cfg = central_cfg.get_source("assessment_customers")
+ingest_res = ingest(source_cfg)
+
+# Execute end-to-end pipeline with reconciliation and audit
+pipeline_cfg = central_cfg.get_pipeline("customers")
+audit_summary = run_pipeline(pipeline_cfg)
+assert audit_summary.reconciliation_status == "RECONCILED"
+```
 
 ---
 

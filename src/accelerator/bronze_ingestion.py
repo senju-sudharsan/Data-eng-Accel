@@ -828,13 +828,16 @@ def _submission_fingerprint(config: SourceConfig) -> str:
     return hashlib.sha256(details.encode("utf-8")).hexdigest()
 
 
-def ingest(config_path: str | Path, submission_key: str | None = None) -> dict[str, Any]:
+def ingest(config_path: str | Path | SourceConfig, submission_key: str | None = None) -> dict[str, Any]:
     """Execute a source config; a matching submission key is an idempotent retry.
 
     Calls without a key retain legacy semantics: each call intentionally creates
     a new batch even if the input is unchanged.
     """
-    config = load_config(config_path)
+    if isinstance(config_path, SourceConfig):
+        config = config_path
+    else:
+        config = load_config(config_path)
     timestamp = datetime.now(timezone.utc).isoformat()
     tracker = BatchTracker(config.metadata_store)
     fingerprint = _submission_fingerprint(config)

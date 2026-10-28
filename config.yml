@@ -1,0 +1,235 @@
+version: 1
+
+# =============================================================================
+# Global Defaults
+# All relative paths resolve relative to this configuration file's directory.
+# =============================================================================
+defaults:
+  paths:
+    raw: data/fixtures
+    bronze: data/bronze
+    silver: data/silver
+    quarantine: data/silver
+  metadata_store: data/metadata/ingestion.db
+  delimiter: ","
+  encoding: "utf-8"
+
+# =============================================================================
+# Sources
+# Defines all raw input datasets ingested into Bronze JSONL.
+# =============================================================================
+sources:
+  # Baseline test sources
+  assessment_customers:
+    input_path: data/fixtures/customers.csv
+    format: csv
+    bronze_path: data/bronze/customers_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+    delimiter: ","
+    encoding: "utf-8"
+
+  assessment_customers_alternate:
+    input_path: data/fixtures/customers_alternate.csv
+    format: csv
+    bronze_path: data/bronze/customers_alternate_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+    delimiter: ","
+    encoding: "utf-8"
+
+  # Olist E-commerce dataset sources
+  olist_customers:
+    input_path: data/fixtures/archive/olist_customers_dataset.csv
+    format: csv
+    bronze_path: data/bronze/olist_customers_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+
+  olist_geolocation:
+    input_path: data/fixtures/archive/olist_geolocation_dataset.csv
+    format: csv
+    bronze_path: data/bronze/olist_geolocation_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+
+  olist_orders:
+    input_path: data/fixtures/archive/olist_orders_dataset.csv
+    format: csv
+    bronze_path: data/bronze/olist_orders_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+
+  olist_order_items:
+    input_path: data/fixtures/archive/olist_order_items_dataset.csv
+    format: csv
+    bronze_path: data/bronze/olist_order_items_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+
+  olist_order_payments:
+    input_path: data/fixtures/archive/olist_order_payments_dataset.csv
+    format: csv
+    bronze_path: data/bronze/olist_order_payments_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+
+  olist_order_reviews:
+    input_path: data/fixtures/archive/olist_order_reviews_dataset.csv
+    format: csv
+    bronze_path: data/bronze/olist_order_reviews_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+
+  olist_products:
+    input_path: data/fixtures/archive/olist_products_dataset.csv
+    format: csv
+    bronze_path: data/bronze/olist_products_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+
+  olist_sellers:
+    input_path: data/fixtures/archive/olist_sellers_dataset.csv
+    format: csv
+    bronze_path: data/bronze/olist_sellers_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+
+  product_category_translation:
+    input_path: data/fixtures/archive/product_category_name_translation.csv
+    format: csv
+    bronze_path: data/bronze/product_category_translation_raw.jsonl
+    metadata_store: data/metadata/ingestion.db
+    # Explicit utf-8-sig to handle UTF-8 Byte Order Mark (BOM) in Olist translation file
+    encoding: "utf-8-sig"
+
+# =============================================================================
+# Pipelines
+# End-to-end pipelines (Bronze -> Silver transformation -> DQ -> SCD2).
+# =============================================================================
+pipelines:
+  # Customer Pipeline (Reference implementation)
+  customers:
+    source: assessment_customers
+    silver:
+      target_name: dim_customers
+      silver_path: data/silver/dim_customers.jsonl
+      rejected_path: data/silver/quarantine_customers.jsonl
+      primary_keys: ["customer_id"]
+      extra_columns: ignore
+      missing_columns: "null"
+      columns:
+        - name: customer_id
+          data_type: string
+          nullable: false
+          description: "Unique business customer key"
+        - name: customer_name
+          data_type: string
+          nullable: false
+          description: "Standardized customer name"
+        - name: postal_code
+          data_type: string
+          nullable: true
+          description: "Zero-padded 5-digit postal code"
+      mappings:
+        - source_column: customer_id
+          target_column: customer_id
+          transform: trim
+        - source_column: customer_name
+          target_column: customer_name
+          transform: trim
+        - source_column: postal_code
+          target_column: postal_code
+          transform: trim
+      quality_rules:
+        - rule_name: not_null
+          columns: ["customer_id"]
+          severity: reject
+        - rule_name: unique
+          columns: ["customer_id"]
+          severity: reject
+        - rule_name: regex
+          columns: ["postal_code"]
+          severity: warn
+          params:
+            pattern: "^\\d{5}$"
+      scd2:
+        enabled: true
+        business_keys: ["customer_id"]
+        tracking_columns: ["customer_name", "postal_code"]
+        effective_from_col: _effective_from
+        effective_to_col: _effective_to
+        is_current_col: _is_current
+
+  # Olist Products Pipeline (End-to-End SCD2 Dimension)
+  olist_products:
+    source: olist_products
+    silver:
+      target_name: dim_products
+      silver_path: data/silver/dim_products.jsonl
+      rejected_path: data/silver/quarantine_products.jsonl
+      primary_keys: ["product_id"]
+      extra_columns: ignore
+      missing_columns: "null"
+      columns:
+        - name: product_id
+          data_type: string
+          nullable: false
+          description: "Unique product identifier"
+        - name: product_category_name
+          data_type: string
+          nullable: true
+          description: "Categorization of product"
+        - name: product_name_length
+          data_type: integer
+          nullable: true
+          description: "Length of product name in characters"
+        - name: product_description_length
+          data_type: integer
+          nullable: true
+          description: "Length of product description in characters"
+        - name: product_photos_qty
+          data_type: integer
+          nullable: true
+          description: "Number of product photos published"
+        - name: product_weight_g
+          data_type: float
+          nullable: true
+          description: "Product weight in grams"
+        - name: product_length_cm
+          data_type: float
+          nullable: true
+          description: "Product length in centimeters"
+        - name: product_height_cm
+          data_type: float
+          nullable: true
+          description: "Product height in centimeters"
+        - name: product_width_cm
+          data_type: float
+          nullable: true
+          description: "Product width in centimeters"
+      mappings:
+        - source_column: product_id
+          target_column: product_id
+          transform: trim
+        - source_column: product_category_name
+          target_column: product_category_name
+          transform: trim
+        - source_column: product_name_lenght
+          target_column: product_name_length
+        - source_column: product_description_lenght
+          target_column: product_description_length
+        - source_column: product_photos_qty
+          target_column: product_photos_qty
+        - source_column: product_weight_g
+          target_column: product_weight_g
+        - source_column: product_length_cm
+          target_column: product_length_cm
+        - source_column: product_height_cm
+          target_column: product_height_cm
+        - source_column: product_width_cm
+          target_column: product_width_cm
+      quality_rules:
+        - rule_name: not_null
+          columns: ["product_id"]
+          severity: reject
+        - rule_name: unique
+          columns: ["product_id"]
+          severity: reject
+      scd2:
+        enabled: true
+        business_keys: ["product_id"]
+        tracking_columns: ["product_category_name", "product_weight_g"]
+        effective_from_col: _effective_from
+        effective_to_col: _effective_to
+        is_current_col: _is_current

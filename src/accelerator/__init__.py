@@ -1,5 +1,11 @@
 """Metadata-Driven Bronze-Silver Data Engineering Accelerator."""
 
+from accelerator.config_loader import (
+    CentralConfig,
+    GlobalDefaults,
+    PathDefaults,
+    load_central_config,
+)
 from accelerator.bronze_ingestion import (
     BatchTracker,
     LocalBronzeStore,
@@ -65,6 +71,11 @@ from accelerator.silver_transformations import (
 )
 
 __all__ = [
+    # Central Configuration Loader
+    "CentralConfig",
+    "GlobalDefaults",
+    "PathDefaults",
+    "load_central_config",
     # Pipeline Runner
     "run_pipeline",
     # Bronze Ingestion
