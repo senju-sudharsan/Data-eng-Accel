@@ -35,8 +35,11 @@ from accelerator.bronze_ingestion import (
 from accelerator.contracts import (
     BatchAuditSummary,
     BatchStatus,
+    BatchTrackerProtocol,
+    BronzeStoreProtocol,
     PipelineConfig,
     ReconciliationStatus,
+    StagedBronzeStoreProtocol,
     load_pipeline_config,
 )
 from accelerator.quality_validator import QualityValidator
@@ -66,15 +69,23 @@ def _pipeline_fingerprint(config: PipelineConfig) -> str:
 def run_pipeline(
     config_path: str | Path | PipelineConfig,
     submission_key: str | None = None,
+    tracker: BatchTrackerProtocol | BatchTracker | None = None,
+    bronze_store: BronzeStoreProtocol | LocalBronzeStore | None = None,
 ) -> BatchAuditSummary:
     """Execute an end-to-end Bronze–Silver data pipeline.
 
     Parameters
     ----------
     config_path:
-        Path to JSON pipeline configuration file.
+        Path to JSON pipeline configuration file or PipelineConfig instance.
     submission_key:
         Optional client-supplied identifier for idempotent execution and deduplication.
+    tracker:
+        Optional BatchTrackerProtocol implementation for tracking and audit.
+        Defaults to local BatchTracker(config.metadata_store).
+    bronze_store:
+        Optional BronzeStoreProtocol implementation for raw landing.
+        Defaults to LocalBronzeStore().
 
     Returns
     -------
@@ -86,7 +97,8 @@ def run_pipeline(
     else:
         config = load_pipeline_config(config_path)
     timestamp = datetime.now(timezone.utc).isoformat()
-    tracker = BatchTracker(config.metadata_store)
+    if tracker is None:
+        tracker = BatchTracker(config.metadata_store)
     fingerprint = _pipeline_fingerprint(config)
     lease_token = str(uuid.uuid4())
 
@@ -160,7 +172,7 @@ def run_pipeline(
     try:
         # Phase 1: Bronze Landing
         records: list[dict[str, Any]] = []
-        store = LocalBronzeStore()
+        store = bronze_store if bronze_store is not None else LocalBronzeStore()
 
         with _destination_lock(config.bronze_path):
             if _destination_has_batch(config.bronze_path, batch_id):
@@ -177,9 +189,13 @@ def run_pipeline(
                         "_ingestion_batch_id": batch_id,
                         "_ingestion_timestamp": timestamp,
                     })
-                staged, bronze_count = store.stage(config.bronze_path, batch_id, records)
-                tracker.prepare(batch_id, bronze_count, staged)
-                store.commit(staged, config.bronze_path)
+                if isinstance(store, StagedBronzeStoreProtocol) or (hasattr(store, "stage") and hasattr(store, "commit")):
+                    staged, bronze_count = store.stage(config.bronze_path, batch_id, records)
+                    tracker.prepare(batch_id, bronze_count, staged)
+                    store.commit(staged, config.bronze_path)
+                else:
+                    bronze_count = store.append(config.bronze_path, records)
+
                 tracker.mark_committed(batch_id)
                 tracker.set_commit_state(batch_id, "BRONZE_COMMITTED")
 

@@ -37,6 +37,8 @@ from accelerator.contracts import (
     BatchSourceConfigProtocol,
     BatchTrackerProtocol,
     BronzeStoreProtocol,
+    StagedBronzeStoreProtocol,
+    SilverPublisherProtocol,
     ColumnMapping,
     ColumnSchema,
     ExtraColumnsPolicy,
@@ -109,6 +111,8 @@ __all__ = [
     # Protocols
     "SourceReaderProtocol",
     "BronzeStoreProtocol",
+    "StagedBronzeStoreProtocol",
+    "SilverPublisherProtocol",
     "SilverTransformerProtocol",
     "QualityValidatorProtocol",
     "Scd2ProcessorProtocol",

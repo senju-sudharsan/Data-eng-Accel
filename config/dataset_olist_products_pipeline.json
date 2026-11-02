@@ -1,0 +1,49 @@
+{
+  "source_name": "olist_products",
+  "format": "csv",
+  "input_path": "../data/raw/olist_products_dataset.csv",
+  "bronze_path": "../data/bronze/olist_products_raw.jsonl",
+  "metadata_store": "../data/metadata/ingestion.db",
+  "delimiter": ",",
+  "encoding": "utf-8",
+  "silver": {
+    "target_name": "dim_products",
+    "silver_path": "../data/silver/dim_products.jsonl",
+    "rejected_path": "../data/silver/quarantine_products.jsonl",
+    "primary_keys": ["product_id"],
+    "extra_columns": "ignore",
+    "missing_columns": "null",
+    "columns": [
+      {"name": "product_id", "data_type": "string", "nullable": false},
+      {"name": "product_category_name", "data_type": "string", "nullable": true},
+      {"name": "product_name_lenght", "data_type": "integer", "nullable": true},
+      {"name": "product_description_lenght", "data_type": "integer", "nullable": true},
+      {"name": "product_photos_qty", "data_type": "integer", "nullable": true},
+      {"name": "product_weight_g", "data_type": "integer", "nullable": true},
+      {"name": "product_length_cm", "data_type": "integer", "nullable": true},
+      {"name": "product_height_cm", "data_type": "integer", "nullable": true},
+      {"name": "product_width_cm", "data_type": "integer", "nullable": true}
+    ],
+    "mappings": [
+      {"source_column": "product_id", "target_column": "product_id", "transform": "trim"},
+      {"source_column": "product_category_name", "target_column": "product_category_name", "transform": "trim"},
+      {"source_column": "product_name_lenght", "target_column": "product_name_lenght"},
+      {"source_column": "product_description_lenght", "target_column": "product_description_lenght"},
+      {"source_column": "product_photos_qty", "target_column": "product_photos_qty"},
+      {"source_column": "product_weight_g", "target_column": "product_weight_g"},
+      {"source_column": "product_length_cm", "target_column": "product_length_cm"},
+      {"source_column": "product_height_cm", "target_column": "product_height_cm"},
+      {"source_column": "product_width_cm", "target_column": "product_width_cm"}
+    ],
+    "quality_rules": [
+      {"rule_name": "not_null", "columns": ["product_id"], "severity": "reject"},
+      {"rule_name": "unique", "columns": ["product_id"], "severity": "reject"},
+      {"rule_name": "range", "columns": ["product_name_lenght", "product_description_lenght", "product_photos_qty", "product_weight_g", "product_length_cm", "product_height_cm", "product_width_cm"], "severity": "warn", "params": {"min": 0}}
+    ],
+    "scd2": {
+      "enabled": true,
+      "business_keys": ["product_id"],
+      "tracking_columns": ["product_category_name", "product_name_lenght", "product_description_lenght", "product_photos_qty", "product_weight_g", "product_length_cm", "product_height_cm", "product_width_cm"]
+    }
+  }
+}

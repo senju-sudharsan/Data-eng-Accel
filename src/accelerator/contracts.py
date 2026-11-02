@@ -333,8 +333,21 @@ class SourceReaderProtocol(Protocol):
 class BronzeStoreProtocol(Protocol):
     """Protocol for landing raw records into Bronze storage."""
 
-    def append(self, destination: Path, records: Iterable[dict[str, Any]]) -> int:
+    def append(self, destination: Path | str, records: Iterable[dict[str, Any]]) -> int:
         """Append records to the destination store and return count."""
+        ...
+
+
+@runtime_checkable
+class StagedBronzeStoreProtocol(BronzeStoreProtocol, Protocol):
+    """Protocol for Bronze stores supporting two-phase staged commits."""
+
+    def stage(self, destination: Path | str, batch_id: str, records: Iterable[dict[str, Any]]) -> tuple[Path | str, int]:
+        """Stage raw records prior to commit and return (staged_path, record_count)."""
+        ...
+
+    def commit(self, staged: Path | str, destination: Path | str) -> None:
+        """Atomically commit staged raw records to destination."""
         ...
 
 
@@ -381,17 +394,41 @@ class Scd2ProcessorProtocol(Protocol):
 
 
 @runtime_checkable
+class SilverPublisherProtocol(Protocol):
+    """Protocol for publishing conformed Silver records and quarantine records."""
+
+    def publish_silver(
+        self,
+        destination: Path | str,
+        records: list[dict[str, Any]],
+        batch_id: str,
+        scd2_config: Scd2Config | None = None,
+    ) -> int:
+        """Publish conformed records to Silver destination. Returns count written."""
+        ...
+
+    def publish_quarantine(
+        self,
+        destination: Path | str,
+        records: list[dict[str, Any]],
+        batch_id: str,
+    ) -> int:
+        """Publish quarantined records to rejected destination. Returns count written."""
+        ...
+
+
+@runtime_checkable
 class BatchSourceConfigProtocol(Protocol):
     """Structural protocol representing minimal configuration attributes for batch tracking."""
     source_name: str
     format: str
-    input_path: Path
-    bronze_path: Path
+    input_path: Path | str
+    bronze_path: Path | str
 
 
 @runtime_checkable
 class BatchTrackerProtocol(Protocol):
-    """Protocol for batch control and execution auditing."""
+    """Protocol for batch control, state transitions, and execution auditing."""
 
     def start(
         self,
@@ -408,6 +445,47 @@ class BatchTrackerProtocol(Protocol):
         """Start a batch record and return unique batch_id."""
         ...
 
+    def find_submission(self, submission_key: str) -> dict[str, Any] | Any | None:
+        """Find an existing batch submission by client submission key for idempotency."""
+        ...
+
+    def find_batch(self, batch_id: str) -> dict[str, Any] | Any | None:
+        """Retrieve batch record by batch ID."""
+        ...
+
+    def lease_is_active(self, row: Any) -> bool:
+        """Determine if a batch execution lease is currently active."""
+        ...
+
+    def restart(
+        self,
+        batch_id: str,
+        lease_token: str,
+        *,
+        silver_path: str | Path | None = None,
+        rejected_path: str | Path | None = None,
+        stage: str = "BRONZE",
+        expected_lease_token: str | None = None,
+    ) -> bool:
+        """Re-acquire an active lease on a recoverable batch."""
+        ...
+
+    def prepare(self, batch_id: str, records_processed: int, staged_path: Path | str) -> None:
+        """Record staged raw Bronze record count before committing."""
+        ...
+
+    def mark_committed(self, batch_id: str) -> None:
+        """Record that Bronze records were committed to the destination store."""
+        ...
+
+    def set_commit_state(self, batch_id: str, commit_state: str) -> None:
+        """Record the commit state (e.g. NONE, BRONZE_COMMITTED, OUTPUTS_STAGED, COMMITTED)."""
+        ...
+
+    def update_stage(self, batch_id: str, stage: str, commit_state: str | None = None) -> None:
+        """Update the active processing stage of the batch."""
+        ...
+
     def prepare_outputs(
         self,
         batch_id: str,
@@ -417,7 +495,11 @@ class BatchTrackerProtocol(Protocol):
         commit_state: str = "OUTPUTS_STAGED",
         records_scd2_changed: int | None = None,
     ) -> None:
-        """Record planned output counts prior to atomic publication."""
+        """Record planned output counts prior to publication."""
+        ...
+
+    def set_scd2_changed(self, batch_id: str, records_scd2_changed: int) -> None:
+        """Record the physical number of SCD2 versions inserted for a batch."""
         ...
 
     def finish(
@@ -435,6 +517,8 @@ class BatchTrackerProtocol(Protocol):
         records_failed: int | None = 0,
         stage: str = "COMPLETED",
         reconciliation_status: str | None = None,
+        silver_path: str | Path | None = None,
+        rejected_path: str | Path | None = None,
     ) -> None:
         """Finalize batch status and record processing metrics."""
         ...
