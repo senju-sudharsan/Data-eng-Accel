@@ -74,7 +74,7 @@ sources:
     metadata_store: data/metadata/ingestion.db
 
   olist_products:
-    input_path: data/raw/olist_products_dataset.csv
+    input_path: data/fixtures/archive/olist_products_dataset.csv
     format: csv
     bronze_path: data/bronze/olist_products_raw.jsonl
     metadata_store: data/metadata/ingestion.db

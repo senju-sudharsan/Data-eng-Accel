@@ -408,7 +408,7 @@ def test_postal_codes_retain_leading_zeros() -> None:
 
 def test_real_dataset_customers_pipeline_config() -> None:
     """Test 18: Full validation using real config/dataset_customers_pipeline.json."""
-    pipeline_cfg = load_pipeline_config("config/dataset_customers_pipeline.json")
+    pipeline_cfg = load_pipeline_config("tests/fixtures/legacy_config/dataset_customers_pipeline.json")
     assert pipeline_cfg.silver is not None
     silver_cfg = pipeline_cfg.silver
 
@@ -450,7 +450,7 @@ def test_real_csv_fixtures_end_to_end_transformation() -> None:
     """Validate transformations on records read directly from data/fixtures/ CSV files."""
     import csv
 
-    pipeline_cfg = load_pipeline_config("config/dataset_customers_pipeline.json")
+    pipeline_cfg = load_pipeline_config("tests/fixtures/legacy_config/dataset_customers_pipeline.json")
     silver_cfg = pipeline_cfg.silver
     assert silver_cfg is not None
 
@@ -493,7 +493,7 @@ def test_bronze_to_silver_integration_handoff(tmp_path: Path) -> None:
     bronze_records = list(reader.read(bronze_file))
     assert len(bronze_records) > 0
 
-    pipeline_cfg = load_pipeline_config("config/dataset_customers_pipeline.json")
+    pipeline_cfg = load_pipeline_config("tests/fixtures/legacy_config/dataset_customers_pipeline.json")
     assert pipeline_cfg.silver is not None
 
     transformer = SilverTransformer()

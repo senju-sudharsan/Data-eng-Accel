@@ -528,7 +528,7 @@ def test_count_reconciliation_exact() -> None:
 
 def test_end_to_end_with_silver_transformer_and_real_config() -> None:
     """End-to-end integration: SilverTransformer transforms Bronze -> QualityValidator validates candidate."""
-    pipeline_cfg = load_pipeline_config("config/dataset_customers_pipeline.json")
+    pipeline_cfg = load_pipeline_config("tests/fixtures/legacy_config/dataset_customers_pipeline.json")
     silver_cfg = pipeline_cfg.silver
     assert silver_cfg is not None
 

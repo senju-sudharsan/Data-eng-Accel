@@ -35,19 +35,19 @@ from accelerator.contracts import (
 
 def test_load_legacy_bronze_configs_are_backwards_compatible() -> None:
     """Ensure existing Week 1 Bronze configs load seamlessly without Silver section."""
-    cfg1 = load_pipeline_config("config/source_customers.json")
+    cfg1 = load_pipeline_config("tests/fixtures/legacy_config/source_customers.json")
     assert cfg1.source_name == "assessment_customers"
     assert cfg1.format == "csv"
     assert cfg1.silver is None
 
-    cfg2 = load_pipeline_config("config/source_customers_alternate.json")
+    cfg2 = load_pipeline_config("tests/fixtures/legacy_config/source_customers_alternate.json")
     assert cfg2.source_name == "assessment_customers_alternate"
     assert cfg2.silver is None
 
 
 def test_load_full_pipeline_config() -> None:
     """Ensure full pipeline config parses all canonical, quality, and SCD2 definitions."""
-    cfg = load_pipeline_config("config/dataset_customers_pipeline.json")
+    cfg = load_pipeline_config("tests/fixtures/legacy_config/dataset_customers_pipeline.json")
     assert cfg.source_name == "assessment_customers"
     assert cfg.silver is not None
 
@@ -194,7 +194,7 @@ def test_concrete_protocol_conformance_and_signatures(tmp_path: Path) -> None:
     tracker = BatchTracker(doc_test_db)
     assert isinstance(tracker, BatchTrackerProtocol)
 
-    cfg = load_pipeline_config("config/source_customers.json")
+    cfg = load_pipeline_config("tests/fixtures/legacy_config/source_customers.json")
     records = list(reader.read(cfg))
     assert len(records) == 2
     assert records[0]["customer_id"] == "C001"
@@ -224,13 +224,13 @@ def test_batch_tracker_protocol_status_and_config_types(tmp_path: Path) -> None:
     tracker_proto: BatchTrackerProtocol = tracker
 
     # Test 1: Start with SourceConfig, Finish with raw str status
-    src_cfg = load_config("config/source_customers.json")
+    src_cfg = load_config("tests/fixtures/legacy_config/source_customers.json")
     batch_1 = tracker_proto.start(src_cfg, '2026-10-26T10:00:00Z')
     assert batch_1
     tracker_proto.finish(batch_1, "SUCCESS", 2, '2026-10-26T10:01:00Z', 2)
 
     # Test 2: Start with PipelineConfig, Finish with BatchStatus enum
-    pipe_cfg = load_pipeline_config("config/dataset_customers_pipeline.json")
+    pipe_cfg = load_pipeline_config("tests/fixtures/legacy_config/dataset_customers_pipeline.json")
     batch_2 = tracker_proto.start(pipe_cfg, '2026-10-26T11:00:00Z', submission_key='sub_002')
     assert batch_2
     tracker_proto.finish(batch_2, BatchStatus.SUCCESS, 2, '2026-10-26T11:01:00Z', 2)

@@ -227,7 +227,7 @@ def test_no_side_effects_on_load() -> None:
 
 
 def test_backward_compatibility_with_existing_json_configs() -> None:
-    json_path = PROJECT_ROOT / "config" / "dataset_customers_pipeline.json"
+    json_path = PROJECT_ROOT / "tests" / "fixtures" / "legacy_config" / "dataset_customers_pipeline.json"
     cfg = load_pipeline_config(json_path)
     assert cfg.source_name == "assessment_customers"
     assert cfg.silver is not None
