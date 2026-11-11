@@ -77,7 +77,7 @@ if TYPE_CHECKING:
 # Internal constants
 # ---------------------------------------------------------------------------
 _LEASE_MINUTES = 15
-_BATCH_CONTROL_TABLE = "metadata_batch_control"
+_BATCH_CONTROL_TABLE = "metadata_batch_control_v2"
 
 # Delta column names for batch control (mirror BatchTracker SQLite schema)
 _BC_BATCH_ID = "batch_id"
@@ -211,8 +211,11 @@ class FabricBatchTracker:
                 {_BC_ERROR_MSG}         STRING
             )
             USING DELTA
-            TBLPROPERTIES ('delta.enableChangeDataFeed' = 'false')
-        """)
+            TBLPROPERTIES (
+            'delta.enableChangeDataFeed' = 'false',
+            'delta.feature.allowColumnDefaults' = 'supported'
+            )
+            """)
 
     # ------------------------------------------------------------------
     # BatchTrackerProtocol methods
@@ -267,7 +270,10 @@ class FabricBatchTracker:
         # Use INSERT via a single-row DataFrame to prevent duplicates on
         # submission_key — checked by caller; duplicate batch_id is a UUID
         # collision (astronomically unlikely).
-        df = self._spark.createDataFrame([row])
+        df = self._spark.createDataFrame(
+            [row],
+            schema=self._spark.table(self._table_ref).schema
+        )
         df.write.format("delta").mode("append").saveAsTable(self._table_ref)
         return batch_id
 

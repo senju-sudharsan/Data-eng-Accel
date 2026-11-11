@@ -20,13 +20,17 @@ build/
 
 # Local generated data and databases
 data/bronze/
+data/silver/
 data/metadata/
 *.sqlite
 *.sqlite3
 *.sqlitedb
 
+# Temporary lock files
+*.jsonl.lock
+
 # Airflow logs
 airflow/logs/
 
 # Local Olist source datasets
-data/fixtures/archive/data/fixtures/archive/
+data/fixtures/archive/
